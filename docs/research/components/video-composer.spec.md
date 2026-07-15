@@ -1,5 +1,9 @@
 # Video Composer Specification
 
+## Task 1 gate
+
+**Status: BLOCKED — incomplete and not builder-ready.** This file is a partial evidence ledger, not a source-of-truth builder specification. Downstream Ark pixel-fidelity builder work is gated until all required source captures, live DOM, computed styles, interactions, and responsive states are captured.
+
 ## Overview
 
 - **Planned assembly target:** `src/view/videoGeneration/index.vue`
@@ -8,7 +12,7 @@
 - **Comparative screenshots:** `docs/design-references/jimeng-image-generation-mention-affordance.png`, `docs/design-references/jimeng-video-generation-mention-affordance.png`
 - **Source page title:** `火山方舟 - 体验`
 - **Source URL:** `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`
-- **Interaction model:** mixed pointer/keyboard affordances are visible; exact source event model is unavailable
+- **Interaction model:** mixed pointer/keyboard affordances are visible; unavailable — blocking: exact source event model
 - **Clone boundary:** only the rounded composer; Ark navigation, gallery, authentication, and history are excluded
 
 ## Evidence limitation
@@ -17,7 +21,7 @@ The selected in-app browser could open the exact Ark tab, but every DOM and scre
 
 ## DOM Structure
 
-**Exact source DOM hierarchy:** N/A — live DOM inspection was unavailable.
+**Exact source DOM hierarchy:** Unavailable — blocking: live DOM inspection timed out.
 
 Screenshot-derived visual hierarchy:
 
@@ -43,7 +47,7 @@ Implementation tags, ARIA relationships, classes, and slot boundaries must be ch
 
 ## Computed Styles (exact values from `getComputedStyle()`)
 
-N/A — DOM/CSSOM access timed out, so no `getComputedStyle()` value was obtained.
+Unavailable — blocking: DOM/CSSOM access timed out, so no `getComputedStyle()` value was obtained.
 
 ## Screenshot raster measurements
 
@@ -62,7 +66,7 @@ N/A — DOM/CSSOM access timed out, so no `getComputedStyle()` value was obtaine
 | Bottom/left row inset | `17` px from visible frame border |
 | Primary/placeholder glyph cores | `#3F3F52` / `#B8BAC9` |
 
-These are raster coordinates and samples, not CSS declarations. CSS width, minimum height, padding, border radius, box shadow, font family, font metrics, and transitions are unavailable.
+These are raster coordinates and samples, not CSS declarations. Unavailable — blocking: CSS width, minimum height, padding, border radius, box shadow, font family, font metrics, and transitions.
 
 ## States & Behaviors
 
@@ -75,24 +79,25 @@ These are raster coordinates and samples, not CSS declarations. CSS width, minim
 - Selected visible options are `智能比例`, `720P`, `5秒`, `1条`, and `有声`.
 - `全部清空`, price copy, a standalone `@` control, and a purple circular submit affordance are visible.
 
-### Required but unavailable Ark states
+### Required Ark states — unavailable and blocking
 
-- Empty/default reference state: unavailable.
-- `@图片1` suggestion menu open/closed/keyboard-selected: unavailable.
-- Mention inserted between `让 ` and ` 挥手`: unavailable.
-- Mention focused/deleted: unavailable.
-- Parameter menu open and changed selections: unavailable.
-- Hover/focus/pressed styles and transitions: unavailable.
-- Disabled-versus-ready submit mapping: unavailable.
-- Clear-all result: unavailable.
+- Empty/default reference state: Unavailable — blocking.
+- `@图片1` suggestion menu open/closed/keyboard-selected: Unavailable — blocking.
+- Mention inserted between `让 ` and ` 挥手`: Unavailable — blocking.
+- Mention focused/deleted: Unavailable — blocking.
+- Parameter menu open and changed selections: Unavailable — blocking.
+- Hover/focus/pressed styles and transitions: Unavailable — blocking.
+- Disabled-versus-ready submit mapping: Unavailable — blocking.
+- Clear-all result: Unavailable — blocking.
+- Default form-content verification for `参考内容`: Unavailable — blocking.
 
 ### Hover states
 
-N/A — source hover interaction timed out.
+Unavailable — blocking: source hover interaction timed out.
 
 ### Scroll-triggered or time-driven states
 
-N/A for captured evidence; the crop shows no changing state, and a live sweep could not be completed.
+Unavailable — blocking: a live scroll/time sweep could not be completed, so absence of these behaviors is not established.
 
 ### Safety outcome
 
@@ -121,7 +126,7 @@ N/A for captured evidence; the crop shows no changing state, and a live sweep co
 
 ### Other Ark states
 
-N/A — no additional Ark state was captured.
+Unavailable — blocking: no additional Ark state was captured.
 
 ## Assets
 
@@ -129,7 +134,7 @@ N/A — no additional Ark state was captured.
 - Jimeng image comparison: `docs/design-references/jimeng-image-generation-mention-affordance.png` (`1381 × 312`, SHA-256 `f6fe4d28f529555f2e51991ca41d3dc8be40587a740acd74271b7a828e5b02d3`).
 - Jimeng video comparison: `docs/design-references/jimeng-video-generation-mention-affordance.png` (`1308 × 336`, SHA-256 `b0c51b4a7e228efce7a0186ec5baa13a1e9f1f525d651af1db3aac8a08e4579d`).
 - Authorized local reference: `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png` (`86,673` bytes); existence verified, not uploaded in this run.
-- Source icon/SVG files: N/A — the raster embeds icons, and live asset extraction was unavailable.
+- Source icon/SVG files: Unavailable — blocking: the raster embeds icons, and live asset extraction timed out.
 - The red arrows in the Ark crop are annotations, not local UI assets.
 
 ## Text Content (verbatim)
@@ -148,16 +153,16 @@ N/A — no additional Ark state was captured.
 0.046 元/千 tokens
 ```
 
-`参考内容` is required by the planned default clone but is not visible in the supplied reference-added crop; its source appearance remains unverified.
+`参考内容` form-content verification is Unavailable — blocking. It is required by the planned default clone, is not visible in the supplied reference-added crop, and could not be live-verified.
 
 ## Responsive Behavior
 
-- **Desktop `1440 × 900`:** N/A — source capture unavailable after in-app screenshot timeout.
-- **Tablet `768 × 1024`:** N/A — source capture unavailable after viewport/screenshot timeout.
-- **Mobile `390 × 844`:** N/A — source capture unavailable after viewport/screenshot timeout.
-- **Breakpoint:** N/A — no Ark breakpoint was observed.
+- **Desktop `1440 × 900`:** Unavailable — blocking: source capture timed out.
+- **Tablet `768 × 1024`:** Unavailable — blocking: source viewport/capture timed out.
+- **Mobile `390 × 844`:** Unavailable — blocking: source viewport/capture timed out.
+- **Breakpoint:** Unavailable — blocking: no Ark breakpoint could be observed.
 
-The implementation must keep upload, prompt, options, and submit reachable, but any wrapping behavior remains a product implementation decision until Task 10 obtains source evidence.
+Downstream responsive and pixel-fidelity builder work is gated until Task 10 obtains the missing Ark source evidence. No product decision or comparative screenshot may substitute for source-responsive truth.
 
 ## Comparative interaction evidence
 

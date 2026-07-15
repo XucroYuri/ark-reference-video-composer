@@ -1,10 +1,14 @@
 # Page Topology
 
+## Task 1 gate
+
+**Status: BLOCKED — incomplete and not builder-ready.** The screenshot-derived map below is provenance evidence only. Downstream pixel-fidelity builder work is gated until live Ark DOM boundaries, layout primitives, stacking contexts, and interaction evidence are captured.
+
 ## Clone boundary
 
 The only cloned section is the marked video-generation composer shown in `docs/design-references/ark-video-composer-reference-added.png`. Ark navigation, gallery, authentication, account chrome, page title area, history, and private BFF behavior are outside the clone boundary.
 
-The exact source DOM selector and source element hierarchy are unavailable because DOM inspection timed out. The boundary is therefore defined visually: the rounded pale-violet frame and everything inside it, excluding the external red annotation arrows.
+Unavailable — blocking: the exact source DOM selector and source element hierarchy because DOM inspection timed out. The provisional boundary below is defined visually: the rounded pale-violet frame and everything inside it, excluding the external red annotation arrows.
 
 ## Screenshot-derived visual hierarchy
 
@@ -44,7 +48,7 @@ This is a visual containment map, not a claim about source tags, classes, compon
 6. A future mention suggestion menu would be an overlay above editor and controls, but no Ark menu screenshot or z-index value is available.
 7. The red arrows belong to the supplied annotation layer and must not appear in the clone.
 
-Exact `position`, flex/grid properties, stacking-context boundaries, and numeric `z-index` values are unavailable. Only the visible front-to-back relationships above are source-backed.
+Unavailable — blocking: exact `position`, flex/grid properties, stacking-context boundaries, and numeric `z-index` values. Only the visible front-to-back relationships above are source-backed, so the topology is not an implementation contract.
 
 ## Interaction model
 

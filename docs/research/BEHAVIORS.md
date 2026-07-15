@@ -1,5 +1,9 @@
 # Behaviors
 
+## Task 1 gate
+
+**Status: BLOCKED — incomplete and not builder-ready.** The missing live behavior evidence gates downstream pixel-fidelity builder work. The partial screenshot package may be retained for provenance, but it is not sufficient to implement or approve Ark-exact interactions.
+
 ## Source access and safety outcome
 
 - Controller-verified page title: `火山方舟 - 体验`.
@@ -12,11 +16,11 @@
 
 | Sweep | Result |
 | --- | --- |
-| Scroll | Unavailable: DOM/interaction timeout prevented a controlled source sweep |
-| Click | Unavailable: no source control was clicked, preserving the no-cost boundary |
-| Hover | Unavailable: pointer interaction timed out |
-| Keyboard | Unavailable: the editor could not be focused or typed into safely |
-| Responsive | Unavailable at `1440 × 900`, `768 × 1024`, and `390 × 844` because viewport/screenshot interaction timed out |
+| Scroll | Unavailable — blocking: DOM/interaction timeout prevented a controlled source sweep |
+| Click | Unavailable — blocking: no source control was clicked, preserving the no-cost boundary |
+| Hover | Unavailable — blocking: pointer interaction timed out |
+| Keyboard | Unavailable — blocking: the editor could not be focused or typed into safely |
+| Responsive | Unavailable — blocking at `1440 × 900`, `768 × 1024`, and `390 × 844` because viewport/screenshot interaction timed out |
 
 ## Ark state evidence
 
@@ -47,21 +51,22 @@ Verbatim visible control/value copy:
 
 | State | Evidence status |
 | --- | --- |
-| Empty reference | Unavailable; no default-state Ark capture |
+| Empty reference | Unavailable — blocking: no default-state Ark capture |
 | Uploaded/reference-added | Visually captured: portrait thumbnail, `图片1` label, overlapping add chip |
 | `@` menu closed | Not established; a standalone `@` control is visible, but menu state cannot be inferred |
-| `@` menu open | Unavailable; no Ark suggestion-menu capture |
-| `@` menu keyboard-selected | Unavailable; no controlled keyboard session |
-| Mention inserted | Unavailable; guidance contains example `@` text, not an inserted editor node |
-| Mention focused | Unavailable |
-| Mention deleted | Unavailable |
-| Parameter menu open | Unavailable |
+| `@` menu open | Unavailable — blocking: no Ark suggestion-menu capture |
+| `@` menu keyboard-selected | Unavailable — blocking: no controlled keyboard session |
+| Mention inserted | Unavailable — blocking: guidance contains example `@` text, not an inserted editor node |
+| Mention focused | Unavailable — blocking |
+| Mention deleted | Unavailable — blocking |
+| Parameter menu open | Unavailable — blocking |
 | Parameter selected | Visible values are `智能比例`, `720P`, `5秒`, `1条`, and `有声`; menu mechanics were not tested |
 | Empty prompt | The editor displays guidance; source document emptiness was not inspectable |
-| Valid prompt | Unavailable |
-| Disabled submit | Unavailable; the purple circle's semantic state cannot be inferred from color alone |
-| Ready submit | Unavailable; the purple circle's semantic state cannot be inferred from color alone |
+| Valid prompt | Unavailable — blocking |
+| Disabled submit | Unavailable — blocking: the purple circle's semantic state cannot be inferred from color alone |
+| Ready submit | Unavailable — blocking: the purple circle's semantic state cannot be inferred from color alone |
 | Clear-all | `全部清空` is visible; its click result was not tested |
+| Default form copy `参考内容` | Unavailable — blocking: it is not visible in the supplied reference-added crop and could not be live-verified |
 
 ## Corroborating Jimeng evidence
 
@@ -69,8 +74,8 @@ Verbatim visible control/value copy:
 - `docs/design-references/jimeng-video-generation-mention-affordance.png` visibly combines a reference thumbnail, the hint `使用 @ 快速调用参考内容，例如：@图片1 模仿 @视频1 的动作，音色参考 @音频1`, compact video controls, and a circular submit affordance.
 - These images corroborate the broad upload-plus-mention interaction pattern only. They do not establish Ark menu contents, Ark atomic-node behavior, Ark keyboard rules, Ark colors, or Ark layout values.
 
-## Implementation and Task 10 obligations
+## Blocking recovery obligations
 
-- The planned clone may implement click-driven controls plus keyboard-driven mention insertion as defined by product requirements, but those mechanics must not be labeled source-verified.
-- Task 10 must re-attempt default, mention-menu, inserted/focused/deleted mention, parameter-menu, hover, keyboard, clear-all, submit-state, and responsive source evidence in the selected in-app browser.
+- Downstream Ark pixel-fidelity builder work is gated. Product requirements and Jimeng patterns cannot replace missing Ark source behavior evidence.
+- Task 10 must re-attempt default, mention-menu, inserted/focused/deleted mention, parameter-menu, hover, keyboard, clear-all, submit-state, `参考内容` form-content, and responsive source evidence in the selected in-app browser.
 - Real generation remains outside automated verification. Stop at Dry-run unless the user gives action-time confirmation for a potentially charged Ark task.
