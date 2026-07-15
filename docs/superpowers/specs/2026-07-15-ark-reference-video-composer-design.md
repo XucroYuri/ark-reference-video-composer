@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-15
 
-**状态：** 待用户复核
+**状态：** 已批准
 
 **目标目录：** `/Users/huachi/Code/03-video-toolkit/Video-Generation-API `
 
