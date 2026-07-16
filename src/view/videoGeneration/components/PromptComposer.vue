@@ -42,10 +42,13 @@ const suggestionState = reactive({
 })
 
 const toSignature = (value) => JSON.stringify(value)
+let suggestionInvalidationToken = 0
 
 const mediaSuggestion = createMediaSuggestion({
   getItems: () => props.mediaList,
   onStateChange: (state) => Object.assign(suggestionState, state),
+  isEnabled: () => isEditorMutable(),
+  getInvalidationToken: () => suggestionInvalidationToken,
 })
 const mediaPasteGuard = createMediaPasteGuard({ getMediaList: () => props.mediaList })
 
@@ -69,6 +72,13 @@ function closeSuggestionState() {
     clientRect: null,
     command: null,
   })
+}
+
+function exitActiveSuggestionSession() {
+  suggestionInvalidationToken += 1
+  closeSuggestionState()
+  if (editor.isDestroyed) return
+  editor.view.dispatch(editor.state.tr.setMeta('closeMediaSuggestion', true))
 }
 
 function isEditorMutable() {
@@ -136,7 +146,7 @@ watch(
   () => props.disabled,
   (disabled) => {
     if (!editor.isDestroyed) editor.setEditable(!disabled)
-    if (disabled) closeSuggestionState()
+    if (disabled) exitActiveSuggestionSession()
   },
 )
 

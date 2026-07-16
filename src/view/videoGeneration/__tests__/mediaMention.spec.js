@@ -488,6 +488,38 @@ describe('PromptComposer', () => {
     wrapper.unmount()
   })
 
+  it('exits the active suggestion session across disabled and re-enabled transitions', async () => {
+    const wrapper = mount(PromptComposer, {
+      props: { modelValue: emptyDoc, mediaList: [readyImage] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const editor = wrapper.findComponent({ name: 'EditorContent' }).props('editor')
+
+    editor.commands.insertContent('@')
+    await Promise.resolve()
+    await nextTick()
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
+
+    const updatesBeforeDisabling = wrapper.emitted('update:modelValue')?.length ?? 0
+    await wrapper.setProps({ disabled: true })
+    await nextTick()
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+
+    await wrapper.setProps({ disabled: false })
+    await nextTick()
+    editor.view.dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await nextTick()
+
+    const emitted = wrapper.emitted('update:modelValue')
+    const latestDoc = emitted.at(-1)[0]
+    expect(emitted.length).toBeGreaterThanOrEqual(updatesBeforeDisabling)
+    expect(JSON.stringify(latestDoc)).not.toContain('mediaMention')
+    expect(wrapper.find('.ProseMirror').element.textContent).toContain('@')
+    expect(wrapper.find('.ProseMirror').element.textContent).not.toContain('@图片1')
+    wrapper.unmount()
+  })
+
   it('prunes stale mentions from initial content against the current media list', async () => {
     const initial = {
       type: 'doc',

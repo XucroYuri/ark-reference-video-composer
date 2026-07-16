@@ -86,10 +86,14 @@ const CLOSED_STATE = Object.freeze({
   command: null,
 })
 
-export function createMediaSuggestionRenderer(onStateChange = () => {}) {
+export function createMediaSuggestionRenderer(
+  onStateChange = () => {},
+  { isEnabled = () => true, getInvalidationToken = () => 0 } = {},
+) {
   let currentProps = null
   let selectedIndex = 0
   let dismissed = false
+  let activeToken = 0
 
   const report = () => {
     if (!currentProps || dismissed) {
@@ -98,7 +102,11 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
     }
     const items = Array.isArray(currentProps.items) ? currentProps.items : []
     const command = (item) => {
-      if (!isSelectableSuggestionItem(item) || dismissed || !currentProps) return false
+      if (!isEnabled()
+        || activeToken !== getInvalidationToken()
+        || !isSelectableSuggestionItem(item)
+        || dismissed
+        || !currentProps) return false
       return currentProps.command(item) !== false
     }
     onStateChange({
@@ -113,6 +121,7 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
   const update = (props) => {
     currentProps = props
     dismissed = false
+    activeToken = getInvalidationToken()
     const candidate = firstSelectableIndex(Array.isArray(props.items) ? props.items : [])
     selectedIndex = candidate >= 0 ? candidate : 0
     report()
@@ -123,6 +132,7 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
     onUpdate: update,
     onKeyDown({ view, event }) {
       if (!currentProps || dismissed) return false
+      if (!isEnabled() || activeToken !== getInvalidationToken()) return false
       if (event.key === 'Escape') {
         dismissed = true
         report()
@@ -153,9 +163,18 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
   }
 }
 
-export function createMediaSuggestion({ getItems, onStateChange } = {}) {
+export function createMediaSuggestion({
+  getItems,
+  onStateChange,
+  isEnabled,
+  getInvalidationToken,
+} = {}) {
   const readMedia = typeof getItems === 'function' ? getItems : () => []
   const reportState = typeof onStateChange === 'function' ? onStateChange : () => {}
+  const readEnabled = typeof isEnabled === 'function' ? isEnabled : () => true
+  const readInvalidationToken = typeof getInvalidationToken === 'function'
+    ? getInvalidationToken
+    : () => 0
 
   return Extension.create({
     name: 'mediaSuggestion',
@@ -164,9 +183,10 @@ export function createMediaSuggestion({ getItems, onStateChange } = {}) {
       return [Suggestion({
         editor: this.editor,
         char: '@',
-        items: ({ query }) => getMediaSuggestionItems(readMedia(), query),
+        items: ({ query }) => (readEnabled() ? getMediaSuggestionItems(readMedia(), query) : []),
         command: ({ editor, range, props }) => {
           if (!editor || editor.isDestroyed || !editor.isEditable) return false
+          if (!readEnabled()) return false
           if (!isSelectableSuggestionItem(props)) return false
           const currentItem = getMediaSuggestionItems(readMedia()).find((item) => (
             isSelectableSuggestionItem(item)
@@ -188,7 +208,10 @@ export function createMediaSuggestion({ getItems, onStateChange } = {}) {
             })
             .run()
         },
-        render: () => createMediaSuggestionRenderer(reportState),
+        render: () => createMediaSuggestionRenderer(reportState, {
+          isEnabled: readEnabled,
+          getInvalidationToken: readInvalidationToken,
+        }),
       })]
     },
   })
