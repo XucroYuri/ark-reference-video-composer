@@ -83,7 +83,7 @@ async function unwrapApiCall(request) {
   if (response?.response && Object.hasOwn(response.response, 'data')) {
     return unwrapEnvelope(response.response.data)
   }
-  if (response instanceof Error) {
+  if (response == null || response instanceof Error) {
     throw new VideoGenerationStoreError(
       'VIDEO_GENERATION_NETWORK_ERROR',
       '视频生成网络请求失败',
@@ -188,11 +188,24 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     }
   }
 
+  function captureLifecycleOperation() {
+    return { epoch: lifecycleEpoch }
+  }
+
   function assertCurrentDraftOperation(captured) {
     if (captured.epoch !== lifecycleEpoch || captured.revision !== draftRevision) {
       throw new VideoGenerationStoreError(
         'VIDEO_GENERATION_STALE_OPERATION',
         '草稿已变化，已忽略过期响应',
+      )
+    }
+  }
+
+  function assertCurrentLifecycle(captured) {
+    if (captured.epoch !== lifecycleEpoch) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_STALE_OPERATION',
+        '草稿生命周期已变化，已忽略过期响应',
       )
     }
   }
@@ -265,16 +278,19 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   async function uploadMedia(file) {
-    if (activeUploadOperation !== null || activeRemovalOperation !== null) throwPending()
+    if (activeUploadOperation !== null
+      || activeRemovalOperation !== null
+      || activeSubmissionOperation !== null
+      || submitPending.value) throwPending()
     const operationId = createOperationId()
-    const captured = captureDraftOperation()
+    const captured = captureLifecycleOperation()
     activeUploadOperation = operationId
     uploadPending.value = true
     try {
       const formData = new FormData()
       formData.append('file', file)
       const data = requireMedia(await unwrapApiCall(uploadReference(formData)))
-      assertCurrentDraftOperation(captured)
+      assertCurrentLifecycle(captured)
       return addMedia(data)
     } finally {
       if (activeUploadOperation === operationId) {
@@ -285,24 +301,23 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   async function removeMedia(mediaId) {
-    if (activeRemovalOperation !== null || activeUploadOperation !== null) throwPending()
+    if (activeRemovalOperation !== null
+      || activeUploadOperation !== null
+      || activeSubmissionOperation !== null
+      || submitPending.value) throwPending()
     if (!mediaList.value.some((item) => item.id === mediaId)) return null
 
     const operationId = createOperationId()
-    const captured = captureDraftOperation()
+    const captured = captureLifecycleOperation()
     activeRemovalOperation = operationId
     removePending.value = true
     try {
       await unwrapApiCall(deleteReference({ mediaId }))
-      assertCurrentDraftOperation(captured)
+      assertCurrentLifecycle(captured)
       const currentIndex = mediaList.value.findIndex((item) => item.id === mediaId)
-      if (currentIndex < 0) {
-        throw new VideoGenerationStoreError(
-          'VIDEO_GENERATION_STALE_OPERATION',
-          '草稿已变化，已忽略过期响应',
-        )
-      }
-      const [removed] = mediaList.value.splice(currentIndex, 1)
+      const [removed] = currentIndex >= 0
+        ? mediaList.value.splice(currentIndex, 1)
+        : [null]
       editorDoc.value = removeMentionsByMediaId(editorDoc.value, mediaId)
       invalidateDryRun()
       return removed
@@ -315,7 +330,11 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   async function runDryRun() {
-    if (activeSubmissionOperation !== null) throwPending()
+    if (activeSubmissionOperation !== null
+      || activeUploadOperation !== null
+      || activeRemovalOperation !== null
+      || uploadPending.value
+      || removePending.value) throwPending()
 
     const operationId = createOperationId()
     const captured = captureDraftOperation()
@@ -338,6 +357,10 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   async function confirmRealGeneration(token) {
+    if (activeUploadOperation !== null
+      || activeRemovalOperation !== null
+      || uploadPending.value
+      || removePending.value) throwPending()
     const currentToken = dryRunResult.value?.confirmationToken
     if (typeof token !== 'string' || !token || token !== currentToken) {
       throw new VideoGenerationStoreError(
@@ -397,8 +420,8 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     ))
     const responseId = typeof data.id === 'string' && data.id
       ? data.id
-      : typeof data.id_task === 'string' && data.id_task
-        ? data.id_task
+      : typeof data.task_id === 'string' && data.task_id
+        ? data.task_id
         : ''
     const validStatus = typeof data.status === 'string' && TASK_STATUSES.has(data.status)
     const validSucceededContent = data.status !== 'succeeded'
