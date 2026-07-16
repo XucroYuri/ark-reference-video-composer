@@ -35,12 +35,28 @@ function isPublicMediaUrl(url) {
   return /^asset:\/\/[^\s]+$/.test(url) || /^https:\/\/[^\s]+$/.test(url)
 }
 
+function isValidMediaId(mediaId) {
+  return typeof mediaId === 'string' && mediaId.trim().length > 0
+}
+
 function collectMediaMetadataErrors(mediaList) {
   const errors = []
   const seenIds = new Set()
+  const seenRealIndexes = new Set()
 
   mediaList.forEach((item, index) => {
-    if (seenIds.has(item.id)) {
+    const validId = isValidMediaId(item.id)
+    const validRealIndex = Number.isInteger(item.realIndex) && item.realIndex > 0
+    const duplicateId = validId && seenIds.has(item.id)
+
+    if (!validId) {
+      errors.push({
+        code: 'INVALID_MEDIA_ID',
+        path: `mediaList[${index}].id`,
+        mediaId: item.id,
+        message: `素材 ID 必须是非空字符串：mediaList[${index}].id`,
+      })
+    } else if (duplicateId) {
       errors.push({
         code: 'DUPLICATE_MEDIA_ID',
         path: `mediaList[${index}].id`,
@@ -60,13 +76,23 @@ function collectMediaMetadataErrors(mediaList) {
       })
     }
 
-    if (!Number.isInteger(item.realIndex) || item.realIndex < 1) {
+    if (!validRealIndex) {
       errors.push({
         code: 'INVALID_MEDIA_REAL_INDEX',
         path: `mediaList[${index}].realIndex`,
         mediaId: item.id,
         message: `素材 realIndex 必须是正整数：${item.id}`,
       })
+    } else if (validId && !duplicateId && seenRealIndexes.has(item.realIndex)) {
+      errors.push({
+        code: 'DUPLICATE_MEDIA_REAL_INDEX',
+        path: `mediaList[${index}].realIndex`,
+        mediaId: item.id,
+        realIndex: item.realIndex,
+        message: `素材 realIndex 重复：${item.realIndex}`,
+      })
+    } else if (validId && !duplicateId) {
+      seenRealIndexes.add(item.realIndex)
     }
   })
 
@@ -77,7 +103,7 @@ export function collectCanonicalMedia(doc, mediaList) {
   const list = Array.isArray(mediaList) ? mediaList : []
   const byId = new Map()
   for (const item of list) {
-    if (!byId.has(item.id)) byId.set(item.id, item)
+    if (isValidMediaId(item.id) && !byId.has(item.id)) byId.set(item.id, item)
   }
   const ordered = []
   const seen = new Set()
@@ -93,7 +119,7 @@ export function collectCanonicalMedia(doc, mediaList) {
   })
 
   for (const item of list) {
-    if (!seen.has(item.id)) {
+    if (isValidMediaId(item.id) && !seen.has(item.id)) {
       seen.add(item.id)
       ordered.push(item)
     }
@@ -115,8 +141,9 @@ export function serializePrompt(doc, mediaList) {
     modelPrompt: '',
   }
   const missingMedia = []
-  const missingMediaIds = new Set()
+  const missingMediaKeys = new Set()
   let paragraphCount = 0
+  let mentionCount = 0
 
   const appendToPrompts = (value) => {
     prompts.readablePrompt += value
@@ -143,21 +170,27 @@ export function serializePrompt(doc, mediaList) {
 
     if (node.type !== 'mediaMention') return
 
-    const media = mediaById.get(node.attrs?.mediaId)
-    const canonicalIndex = canonicalIndexById.get(node.attrs?.mediaId)
+    const mentionIndex = mentionCount
+    mentionCount += 1
+    const mediaId = node.attrs?.mediaId
+    const media = isValidMediaId(mediaId) ? mediaById.get(mediaId) : undefined
+    const canonicalIndex = isValidMediaId(mediaId) ? canonicalIndexById.get(mediaId) : undefined
     if (!media || !canonicalIndex) {
       const attrs = node.attrs || {}
       const token = TOKEN_BY_KIND[attrs.kind] || attrs.kind || '素材'
       const sourceLabel = attrs.sourceLabel || `${token}${attrs.realIndex ?? ''}`
       appendToPrompts(`@${sourceLabel}`)
 
-      if (!missingMediaIds.has(attrs.mediaId)) {
-        missingMediaIds.add(attrs.mediaId)
+      const path = `doc.mediaMention[${mentionIndex}].attrs.mediaId`
+      const missingKey = isValidMediaId(mediaId) ? `id:${mediaId}` : `path:${path}`
+      if (!missingMediaKeys.has(missingKey)) {
+        missingMediaKeys.add(missingKey)
         missingMedia.push({
-          mediaId: attrs.mediaId,
+          mediaId,
           kind: attrs.kind,
           sourceLabel,
           realIndex: attrs.realIndex,
+          path,
         })
       }
       return
@@ -181,6 +214,7 @@ export function serializePrompt(doc, mediaList) {
       ...collectMediaMetadataErrors(list),
       ...missingMedia.map((item) => ({
         code: 'MISSING_MEDIA',
+        path: item.path,
         mediaId: item.mediaId,
         message: `引用的素材不存在：${item.sourceLabel}`,
       })),

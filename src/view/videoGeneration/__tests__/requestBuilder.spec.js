@@ -220,6 +220,7 @@ describe('requestBuilder', () => {
       runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
     })).toEqual([{
       code: 'MISSING_MEDIA',
+      path: 'doc.mediaMention[0].attrs.mediaId',
       mediaId: 'missing-9',
       message: '引用的素材不存在：图片9',
     }])
@@ -411,5 +412,78 @@ describe('requestBuilder', () => {
 
     expect(blockers).toEqual([error])
     expect(blockers[0]).not.toBe(error)
+  })
+
+  it('rejects malformed media and mention IDs without creating Ark media parts', () => {
+    const invalidIds = [undefined, '', '   ']
+    const mediaList = invalidIds.map((id, index) => ({
+      ...image1,
+      id,
+      name: `invalid-${index + 1}.png`,
+      realIndex: index + 1,
+      remoteUrl: `https://media.example/invalid-${index + 1}.png`,
+    }))
+    const invalidMentionDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: invalidIds.flatMap((mediaId, index) => [
+        { type: 'mediaMention', attrs: { mediaId, kind: 'image', sourceLabel: `图片${index + 1}`, realIndex: index + 1 } },
+        ...(index < invalidIds.length - 1 ? [{ type: 'text', text: ' ' }] : []),
+      ]) }],
+    }
+    const serialization = serializePrompt(invalidMentionDoc, mediaList)
+    const request = buildArkRequest({
+      doc: invalidMentionDoc,
+      mediaList,
+      model: 'doubao-seedance-2-0-260128',
+      config: { ratio: 'adaptive', resolution: '720p', duration: 5, generateAudio: false },
+    })
+    const expectedErrors = [
+      ...invalidIds.map((mediaId, index) => ({
+        code: 'INVALID_MEDIA_ID',
+        path: `mediaList[${index}].id`,
+        mediaId,
+        message: `素材 ID 必须是非空字符串：mediaList[${index}].id`,
+      })),
+      ...invalidIds.map((mediaId, index) => ({
+        code: 'MISSING_MEDIA',
+        path: `doc.mediaMention[${index}].attrs.mediaId`,
+        mediaId,
+        message: `引用的素材不存在：图片${index + 1}`,
+      })),
+    ]
+
+    expect(collectCanonicalMedia(invalidMentionDoc, mediaList)).toEqual([])
+    expect(serialization.media).toEqual([])
+    expect(serialization.errors).toEqual(expectedErrors)
+    expect(request.content).toEqual([{ type: 'text', text: '@图片1 @图片2 @图片3' }])
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toEqual(expectedErrors)
+  })
+
+  it.each([
+    ['mentioned', { type: 'doc', content: [{ type: 'paragraph', content: [
+      { type: 'mediaMention', attrs: { mediaId: 'media-2' } },
+    ] }] }, ['media-2', 'media-1']],
+    ['unmentioned', { type: 'doc', content: [{ type: 'paragraph' }] }, ['media-1', 'media-2']],
+  ])('blocks duplicate realIndex labels when the later record is %s', (_state, duplicateDoc, expectedOrder) => {
+    const duplicateIndexMedia = { ...image2, realIndex: 1 }
+    const mediaList = [image1, duplicateIndexMedia]
+    const serialization = serializePrompt(duplicateDoc, mediaList)
+    const expectedError = {
+      code: 'DUPLICATE_MEDIA_REAL_INDEX',
+      path: 'mediaList[1].realIndex',
+      mediaId: 'media-2',
+      realIndex: 1,
+      message: '素材 realIndex 重复：1',
+    }
+
+    expect(collectCanonicalMedia(duplicateDoc, mediaList).map((item) => item.id)).toEqual(expectedOrder)
+    expect(serialization.errors).toEqual([expectedError])
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toEqual([expectedError])
   })
 })
