@@ -75,8 +75,15 @@ export function buildPublicMediaUrl(baseUrl, filename) {
   }
 }
 
+function decodeMultipartFilename(value) {
+  if (typeof value !== 'string' || !value) return ''
+  const decoded = Buffer.from(value, 'latin1').toString('utf8')
+  return decoded && !decoded.includes('\uFFFD') ? decoded : value
+}
+
 function safeOriginalName(value, fallback) {
-  const portablePath = typeof value === 'string' ? value.replaceAll('\\', '/') : ''
+  const normalized = decodeMultipartFilename(value)
+  const portablePath = normalized.replaceAll('\\', '/')
   const name = basename(portablePath).trim()
   return name ? name.slice(0, 255) : fallback
 }

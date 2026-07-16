@@ -241,11 +241,11 @@ describe('VideoGeneration composer', () => {
     wrapper.unmount()
   })
 
-  it('renders idle, submitting, queued, running, succeeded, failed, and cancelled task states', () => {
+  it('hides empty task state and renders submitting, queued, running, succeeded, failed, and cancelled task states', () => {
     const idle = mount(GenerationTaskPanel, {
       props: { taskList: [] },
     })
-    expect(idle.text()).toContain('idle')
+    expect(idle.find('[aria-label="生成任务"]').exists()).toBe(false)
     idle.unmount()
 
     const submitting = mount(GenerationTaskPanel, {

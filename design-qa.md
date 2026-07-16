@@ -1,0 +1,50 @@
+# Design QA
+
+- Source visual truth paths
+  - `docs/design-references/ark-video-composer-reference-inserted.png`
+  - `docs/design-references/ark-video-composer-mobile.png`
+  - `docs/design-references/ark-video-composer-mention-menu.png`
+  - `docs/design-references/ark-video-composer-reference-added.png`
+- Implementation screenshot paths
+  - `docs/design-references/ark-composer-implementation-desktop.png`
+  - `docs/design-references/ark-composer-implementation-mobile.png`
+- Viewports and states
+  - Desktop: Chrome extension, `1440 × 900`, reference image ready, inline `@图片1` inserted, prompt text `让 @图片1 挥手`, default `720P / 5秒 / 1条 / 有声`.
+  - Mobile: Chrome extension, `390 × 844`, default empty composer state.
+  - Runtime route: `http://127.0.0.1:43127/#/video-generation`.
+  - Health endpoint: `http://127.0.0.1:43128/api/health` returned `{ code: 0, data: { status: "ok" }, msg: "服务正常" }`.
+- Full-view comparison evidence
+  - `docs/design-references/ark-composer-comparison-desktop.png`
+  - `docs/design-references/ark-composer-comparison-mobile.png`
+  - Scope note: the MVP intentionally clones the marked composer, not the Ark console shell, side navigation, top model bar, history/gallery, or floating utility buttons. Full-view differences from those excluded shell areas are not product defects.
+- Focused composer comparison evidence
+  - Desktop comparison uses the source `reference-inserted` composer state against the implementation `reference-inserted` state in `docs/design-references/ark-composer-comparison-desktop.png`.
+  - Mobile comparison uses the source default composer viewport against the implementation default composer viewport in `docs/design-references/ark-composer-comparison-mobile.png`; outer Ark shell clipping is documented as out of scope.
+- Primary interactions tested
+  - Local route rendered in the in-app browser and Chrome extension without console errors.
+  - Local reference image `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png` was uploaded to the local API with no external request.
+  - Chrome file chooser automation was blocked by extension file access permissions; the reproducible browser run used the development-only `qaMedia` URL seed after local API upload. Production builds do not expose this seed path.
+  - `@` menu opened after typing `让 @`; keyboard `Enter` inserted atomic `@图片1`; final editor text was `让 @图片1 挥手`.
+  - Audio was changed to `无声`; `720P / 5秒 / 1条` remained unchanged.
+  - Submit opened Dry-run preview only.
+  - Dry-run preview verified:
+    - readable prompt: `让 @图片1 挥手`
+    - console-compatible template: `让 <<<image_1_1>>> 挥手`
+    - model prompt: `让 【图片 1】 挥手`
+    - media URL mapping: `local://1058c93f-037f-4d0d-9e71-c3f2970e03b5`
+    - final request contains `generate_audio: false`
+    - real generation blockers show real generation disabled, missing `ARK_API_KEY`, and local non-public media URL.
+  - Deleted the atomic mention with keyboard navigation/backspace.
+  - Undo restored `@图片1`; redo removed it again.
+  - `全部清空` removed media, cleared editor content, restored placeholder, disabled submit, and left no visible task panel.
+- Browser console errors checked
+  - In-app browser route check: no console errors.
+  - Chrome extension route/interactions/Dry-run: no console errors.
+- Comparison history and fixes
+  - P2 fixed: empty task panel rendered visible `idleidle` below the composer. The panel now renders only while submitting or when real task records exist.
+  - P2 fixed: multipart filenames with UTF-8 Chinese characters were displayed as latin1 mojibake in Dry-run media mappings when uploaded through Node/curl FormData. `server/media/store.js` now decodes safe multipart filenames and preserves `小豆Q版.png`; regression coverage added in `server/__tests__/media.spec.js`.
+- Residual P3 polish
+  - The standalone MVP vertical position is higher than the Ark console screenshot because the outer Ark navigation/header/gallery shell is out of scope.
+  - Mobile screenshot shows the standalone component clipped differently from the full Ark shell; the component keeps the approved minimum composer width and horizontal overflow behavior.
+  - Chrome automated file upload requires enabling “Allow access to file URLs” for the ChatGPT Chrome Extension. Without that permission, browser automation cannot call `fileChooser.setFiles`, so local API upload plus development-only seed was used for reproducible no-cost QA.
+- final result: passed

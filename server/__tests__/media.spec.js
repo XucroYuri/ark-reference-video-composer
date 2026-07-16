@@ -80,6 +80,18 @@ describe('videoGeneration local media', () => {
     expect(Buffer.from(await readResponse.arrayBuffer())).toEqual(PNG_1X1)
   })
 
+  it('preserves UTF-8 filenames that arrive through multipart latin1 decoding', async () => {
+    const mojibakeName = Buffer.from('小豆Q版.png', 'utf8').toString('latin1')
+
+    const saved = await mediaStore.save({
+      buffer: PNG_1X1,
+      mimetype: 'image/png',
+      originalname: mojibakeName,
+    })
+
+    expect(saved.name).toBe('小豆Q版.png')
+  })
+
   it('rejects a spoofed MIME type before writing to disk', async () => {
     const { response, json } = await upload(baseUrl, PNG_1X1, {
       name: 'spoof.jpg',

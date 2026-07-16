@@ -91,6 +91,7 @@ import './styles/index.scss'
 const store = useVideoGenerationStore()
 const composerRef = ref(null)
 const previewOpen = ref(false)
+const qaEnabled = import.meta.env.MODE === 'development'
 
 function docText(node) {
   if (!node || typeof node !== 'object') return ''
@@ -142,4 +143,19 @@ async function requestRemoveMedia(media) {
   }
   await store.removeMedia(media.id)
 }
+
+function seedQaReferenceFromLocation() {
+  if (!qaEnabled || typeof window === 'undefined') return
+  const [, queryString = ''] = window.location.hash.split('?')
+  const payload = new URLSearchParams(queryString).get('qaMedia')
+  if (!payload) return
+  try {
+    const media = JSON.parse(payload)
+    store.addMedia(media)
+  } catch {
+    // Ignore malformed QA payloads; this path is only for local browser verification.
+  }
+}
+
+seedQaReferenceFromLocation()
 </script>

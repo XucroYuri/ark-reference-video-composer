@@ -1,5 +1,5 @@
 <template>
-  <section class="generation-task-panel" aria-label="生成任务">
+  <section v-if="visibleTasks.length" class="generation-task-panel" aria-label="生成任务">
     <article
       v-for="task in visibleTasks"
       :key="task.id"
@@ -31,7 +31,6 @@ const props = defineProps({
 })
 
 const statusLabels = {
-  idle: 'idle',
   submitting: 'submitting',
   queued: 'queued',
   running: 'running',
@@ -43,6 +42,6 @@ const statusLabels = {
 const visibleTasks = computed(() => {
   if (props.submitting) return [{ id: 'local-submitting', status: 'submitting' }]
   if (props.taskList.length) return props.taskList
-  return [{ id: 'idle', status: 'idle' }]
+  return []
 })
 </script>
