@@ -1,14 +1,15 @@
 // @vitest-environment node
 
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import sharp from 'sharp'
 
 import { createApp } from '../app.js'
-import { createMediaStore } from '../media/store.js'
+import { buildPublicMediaUrl, createMediaStore } from '../media/store.js'
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -211,5 +212,136 @@ describe('videoGeneration local media', () => {
       msg: '上传文件不能超过 30MB',
     })
     expect(mediaStore.list()).toEqual([])
+  })
+
+  it('rehydrates persisted metadata after restart and can remove the restored media', async () => {
+    const saved = await mediaStore.save({
+      buffer: PNG_1X1,
+      mimetype: 'image/png',
+      originalname: 'persisted.png',
+    })
+    const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
+
+    expect(restartedStore.get(saved.id)).toEqual(saved)
+    expect(restartedStore.list()).toEqual([saved])
+    expect(await restartedStore.remove(saved.id)).toBe(true)
+    expect(restartedStore.get(saved.id)).toBeNull()
+    expect(createMediaStore({ uploadDir, publicBaseUrl: '' }).list()).toEqual([])
+    expect(await readdir(uploadDir)).toEqual(['.media-index.json'])
+  })
+
+  it('serializes concurrent removal so only one caller reports a deletion', async () => {
+    const saved = await mediaStore.save({
+      buffer: PNG_1X1,
+      mimetype: 'image/png',
+      originalname: 'concurrent.png',
+    })
+
+    const results = await Promise.all([
+      mediaStore.remove(saved.id),
+      mediaStore.remove(saved.id),
+    ])
+
+    expect(results.sort()).toEqual([false, true])
+    expect(mediaStore.list()).toEqual([])
+  })
+
+  it('deterministically removes a UUID-named image orphan on restart', async () => {
+    const orphanName = 'f25555d3-70f3-4dd0-8929-65de0ec86ee8.png'
+    const orphanPath = join(uploadDir, orphanName)
+    await writeFile(orphanPath, PNG_1X1)
+
+    const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
+
+    expect(restartedStore.list()).toEqual([])
+    await expect(access(orphanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects a fabricated image container whose pixels cannot be decoded', async () => {
+    const fabricated = Buffer.from(PNG_1X1)
+    const idatOffset = fabricated.indexOf(Buffer.from('IDAT'))
+    fabricated[idatOffset + 6] ^= 0xff
+
+    await expect(mediaStore.save({
+      buffer: fabricated,
+      mimetype: 'image/png',
+      originalname: 'fabricated.png',
+    })).rejects.toMatchObject({ code: 'IMAGE_DECODE_FAILED' })
+    expect(mediaStore.list()).toEqual([])
+  })
+
+  it('fully decodes genuine PNG, JPEG, and WebP images before accepting them', async () => {
+    const jpeg = await sharp(PNG_1X1).jpeg().toBuffer()
+    const webp = await sharp(PNG_1X1).webp().toBuffer()
+    const fixtures = [
+      { buffer: PNG_1X1, mimetype: 'image/png', originalname: 'valid.png' },
+      { buffer: jpeg, mimetype: 'image/jpeg', originalname: 'valid.jpg' },
+      { buffer: webp, mimetype: 'image/webp', originalname: 'valid.webp' },
+    ]
+
+    const accepted = await Promise.all(fixtures.map((file) => mediaStore.save(file)))
+
+    expect(accepted.map((item) => item.mimeType)).toEqual([
+      'image/png',
+      'image/jpeg',
+      'image/webp',
+    ])
+  })
+
+  it('rejects excessive dimensions even when the encoded file is small', async () => {
+    const oversizedDimensions = await sharp({
+      create: {
+        width: 8193,
+        height: 1,
+        channels: 3,
+        background: '#ffffff',
+      },
+    }).png().toBuffer()
+
+    await expect(mediaStore.save({
+      buffer: oversizedDimensions,
+      mimetype: 'image/png',
+      originalname: 'too-wide.png',
+    })).rejects.toMatchObject({ code: 'IMAGE_DIMENSIONS_EXCEEDED' })
+  })
+
+  it('builds remote media URLs only from a safe public HTTPS base', () => {
+    expect(buildPublicMediaUrl(
+      'https://cdn.example.com/reference-media///',
+      'safe image.png',
+    )).toBe('https://cdn.example.com/reference-media/uploads/safe%20image.png')
+
+    const invalidBases = [
+      'http://cdn.example.com/base',
+      'https://user:pass@cdn.example.com/base',
+      'https://cdn.example.com/base?token=secret',
+      'https://cdn.example.com/base#fragment',
+      'https://localhost/base',
+      'https://assets.local/base',
+      'https://127.0.0.1/base',
+      'https://10.0.0.1/base',
+      'https://172.16.0.1/base',
+      'https://192.168.1.1/base',
+      'https://169.254.1.1/base',
+      'https://0.0.0.0/base',
+      'https://[::1]/base',
+      'https://[fc00::1]/base',
+      'https://[fe80::1]/base',
+      'https://[::]/base',
+    ]
+    for (const base of invalidBases) {
+      expect(buildPublicMediaUrl(base, 'safe.png')).toBe('')
+    }
+  })
+
+  it('returns a 404 envelope for a missing file inside the controlled static mount', async () => {
+    const response = await fetch(`${baseUrl}/uploads/missing.png`)
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({
+      code: 40400,
+      data: { path: '/uploads/missing.png' },
+      msg: '请求路径不存在',
+    })
   })
 })

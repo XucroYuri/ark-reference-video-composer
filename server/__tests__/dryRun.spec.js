@@ -30,11 +30,18 @@ const validBody = {
 
 describe('videoGeneration dryRun', () => {
   let arkClient
+  let mediaStore
   let server
   let baseUrl
 
   beforeEach(async () => {
     arkClient = { createTask: vi.fn(), getTask: vi.fn() }
+    mediaStore = {
+      get: vi.fn(),
+      save: vi.fn(),
+      remove: vi.fn(),
+      list: vi.fn(),
+    }
     const app = createApp({
       config: {
         arkModel: 'doubao-seedance-2-0-260128',
@@ -42,12 +49,7 @@ describe('videoGeneration dryRun', () => {
         realGenerationEnabled: false,
       },
       arkClient,
-      mediaStore: {
-        get: vi.fn(),
-        save: vi.fn(),
-        remove: vi.fn(),
-        list: vi.fn(),
-      },
+      mediaStore,
       confirmationStore: { issue: vi.fn(), consume: vi.fn() },
     })
     server = createServer(app)
@@ -164,5 +166,178 @@ describe('videoGeneration dryRun', () => {
       data: { status: 'ok' },
       msg: '服务正常',
     })
+  })
+
+  it('resolves authoritative media and cannot be fooled by forged client readiness or URLs', async () => {
+    const mediaId = '6bd7a6ea-3b94-43fb-99ad-f91f3f73f673'
+    mediaStore.get.mockResolvedValue({
+      id: mediaId,
+      kind: 'image',
+      name: 'server.png',
+      mimeType: 'image/png',
+      size: 68,
+      status: 'ready',
+      previewUrl: `/uploads/${mediaId}.png`,
+    })
+    const forgedBody = {
+      ...validBody,
+      doc: {
+        type: 'doc',
+        content: [{
+          type: 'paragraph',
+          content: [{
+            type: 'mediaMention',
+            attrs: { mediaId, kind: 'image', sourceLabel: '图片1', realIndex: 1 },
+          }],
+        }],
+      },
+      mediaList: [{
+        id: mediaId,
+        realIndex: 1,
+        kind: 'image',
+        status: 'ready',
+        remoteUrl: 'https://attacker.example/forged.png',
+      }],
+    }
+
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(forgedBody),
+    })
+    const json = await response.json()
+
+    expect(mediaStore.get).toHaveBeenCalledWith(mediaId)
+    expect(json.data.realReady).toBe(false)
+    expect(json.data.blockers).toContainEqual(expect.objectContaining({
+      code: 'MEDIA_NOT_PUBLIC',
+      mediaId,
+    }))
+    expect(json.data.serialization.media[0]).not.toHaveProperty('remoteUrl')
+    expect(json.data.request.content[1].image_url.url).toBe(`local://${mediaId}`)
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+    expect(arkClient.getTask).not.toHaveBeenCalled()
+  })
+
+  it('rejects config outside the server-side allowlist before serialization', async () => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        config: {
+          mode: 'text_only',
+          ratio: 'free',
+          resolution: '16k',
+          duration: '5',
+          count: 0,
+          generateAudio: 'false',
+        },
+      }),
+    })
+    const json = await response.json()
+
+    expect(response.status).toBe(400)
+    expect(json).toMatchObject({
+      code: 40006,
+      data: { reason: 'INVALID_CONFIG' },
+      msg: 'Dry-run 请求参数无效',
+    })
+    expect(json.data.errors.map((item) => item.path)).toEqual([
+      'config.mode',
+      'config.ratio',
+      'config.resolution',
+      'config.duration',
+      'config.count',
+      'config.generateAudio',
+    ])
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed editor document shapes before serialization', async () => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, doc: { type: 'doc', content: 'not-an-array' } }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      code: 40006,
+      data: { reason: 'INVALID_DOC', path: 'doc.content' },
+      msg: 'Dry-run 请求参数无效',
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
+
+  it('returns hc-gpt-web 404 envelopes for unknown API and static paths', async () => {
+    for (const path of ['/api/not-found', '/uploads/not-found.png']) {
+      const response = await fetch(`${baseUrl}${path}`)
+
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({
+        code: 40400,
+        data: { path },
+        msg: '请求路径不存在',
+      })
+    }
+  })
+
+  it('rejects unknown and duplicate media IDs instead of producing readiness data', async () => {
+    const mediaId = 'c497e052-7e03-41f6-a06d-77a92959e111'
+    const post = (mediaList) => fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, mediaList }),
+    })
+
+    mediaStore.get.mockResolvedValueOnce(null)
+    const unknown = await post([{ id: mediaId, realIndex: 1 }])
+    const unknownJson = await unknown.json()
+    expect(unknown.status).toBe(400)
+    expect(unknownJson).toMatchObject({
+      code: 40006,
+      data: { reason: 'UNKNOWN_MEDIA_ID' },
+    })
+    expect(unknownJson.data).not.toHaveProperty('realReady')
+    expect(unknownJson.data).not.toHaveProperty('confirmationToken')
+
+    mediaStore.get.mockResolvedValueOnce({
+      id: mediaId,
+      kind: 'image',
+      status: 'ready',
+      previewUrl: `/uploads/${mediaId}.png`,
+    })
+    const duplicate = await post([
+      { id: mediaId, realIndex: 1 },
+      { id: mediaId, realIndex: 2 },
+    ])
+    expect(duplicate.status).toBe(400)
+    expect(await duplicate.json()).toMatchObject({
+      code: 40006,
+      data: { reason: 'DUPLICATE_MEDIA_ID' },
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
+
+  it('returns a 500 envelope for unexpected server failures', async () => {
+    const mediaId = 'b508bb6f-c669-4aa5-a3e4-2b7239004da3'
+    mediaStore.get.mockRejectedValue(new Error('disk unavailable'))
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        mediaList: [{ id: mediaId, realIndex: 1 }],
+      }),
+    })
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      code: 50000,
+      data: {},
+      msg: '服务内部错误',
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
   })
 })

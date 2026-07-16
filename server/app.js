@@ -21,8 +21,15 @@ export function createApp({ config, arkClient, mediaStore, confirmationStore }) 
     mediaStore,
     confirmationStore,
   }))
+  app.use((req, res) => fail(
+    res,
+    40400,
+    '请求路径不存在',
+    { path: req.path },
+    404,
+  ))
 
-  app.use((error, _req, res, next) => {
+  app.use((error, req, res, next) => {
     void next
     if (error instanceof multer.MulterError) {
       const message = error.code === 'LIMIT_FILE_SIZE'
@@ -35,7 +42,11 @@ export function createApp({ config, arkClient, mediaStore, confirmationStore }) 
       return fail(res, 40001, '请求 JSON 格式错误')
     }
 
-    return fail(res, 50000, '服务内部错误')
+    if (error.status === 404) {
+      return fail(res, 40400, '请求路径不存在', { path: req.path }, 404)
+    }
+
+    return fail(res, 50000, '服务内部错误', {}, 500)
   })
 
   return app

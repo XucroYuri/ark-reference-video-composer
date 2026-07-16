@@ -1,18 +1,13 @@
-import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import dotenv from 'dotenv'
+import { resolve } from 'node:path'
 
 import { createApp } from './app.js'
-import { loadConfig } from './config.js'
+import { loadConfig, loadEnvironment } from './config.js'
 import { createMediaStore } from './media/store.js'
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 
-dotenv.config({ path: resolve(projectRoot, '.env.development') })
-dotenv.config({ path: resolve(projectRoot, '.env.local'), override: true })
-
-const config = loadConfig()
+const config = loadConfig(loadEnvironment({ rootDir: projectRoot }))
 const uploadDir = resolve(projectRoot, 'uploads')
 const mediaStore = createMediaStore({
   uploadDir,
