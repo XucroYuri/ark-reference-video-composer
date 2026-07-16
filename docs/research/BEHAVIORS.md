@@ -1,200 +1,227 @@
-# Behaviors
+# 行为取证记录
 
-## Evidence and safety boundary
+本文记录源站 Composer 的关键交互行为。后续维护者可以用它判断：某个行为是源站真实行为、原型补齐行为，还是明确不在范围内。
 
-- Live title: `火山方舟 - 体验`.
-- Live URL: `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`.
-- Browser: authenticated OpenCLI session `ark-recon`.
-- Page uniqueness before upload: one `form`, one `input[type=file]`, one `[contenteditable=true][role=textbox]`, and one `[data-testid=video-sender-submit-button]`.
-- Authorized file: `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png`, `86,673` bytes.
-- The submit/generate control was never clicked. DOM checks found zero task/result test-id nodes after upload and editing. No video task was created and no generation cost was triggered.
+## 1. 取证边界
 
-The prior in-app browser timeout is resolved provenance, not a current gate. OpenCLI `browser upload` first returned `Not allowed`; its retry exposed a known stale `markerAttr` declaration in CLI `1.7.18`. The same OpenCLI browser bridge then attached the one authorized PNG by assigning a single `File` through `DataTransfer` and dispatching `input` and `change`. Ark accepted it and rendered the real uploaded thumbnail. No other file was attached.
+- 源站页面：`https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`
+- 登录状态：已登录。
+- 取证工具：OpenCLI 浏览器插件、本地浏览器 QA。
+- 取证文件：`docs/design-references/`。
+- 成本约束：取证过程中没有点击真实生成按钮，没有创建视频任务，没有产生生成费用。
 
-## Mandatory interaction sweep
+源站页面中可稳定定位到：
 
-### Scroll
+- 一个视频生成表单；
+- 一个文件上传 input；
+- 一个 `contenteditable=true` 且 `role=textbox` 的 Tiptap 编辑器；
+- 一个提交按钮；
+- 上传后出现的 `@` 菜单和 `@图片1` 原子节点。
 
-The composer is ordinary flow content inside `#exp-studio-conversation-sender-scroll-container`.
+## 2. 上传参考素材
 
-| State | Exact result |
+源站行为：
+
+1. 点击 `参考内容` 上传入口。
+2. 选择本地图片。
+3. 上传成功后显示一个缩略图，标签为 `图片1`。
+4. 缩略图右下角出现叠加加号，用于继续追加素材。
+5. 独立 `@` 按钮和 `全部清空` 出现。
+6. 提交按钮进入可用样式。
+
+本地原型行为：
+
+- 通过 Element Plus Upload 选择文件。
+- 服务端校验 MIME、文件签名、大小、尺寸和可解码性。
+- 返回素材 ID、预览 URL、文件名、大小和状态。
+- 前端用稳定 `realIndex` 显示 `图片1`。
+
+浏览器 QA 备注：
+
+- Chrome 自动化上传本地文件时被扩展权限拦截。
+- 已通过本地 API 上传同一张图，再用 development-only `qaMedia` seed 复现“已上传成功”状态。
+- 后续 `@` 菜单、编辑器、Dry-run 都走真实 UI 交互。
+
+## 3. `@` 菜单与素材插入
+
+源站行为：
+
+1. 编辑器获得焦点。
+2. 输入 `@`。
+3. 编辑器中临时出现 suggestion 标记。
+4. 菜单打开，首个素材项立即处于 active 状态。
+5. 按 `Enter` 后插入 `@图片1`。
+6. 插入后的节点是不可编辑、可拖拽的原子节点，而不是普通文本。
+
+原型行为：
+
+- 使用 Tiptap suggestion 监听 `@`。
+- 菜单候选项来自 `store.mediaList` 中的 ready 素材。
+- `Enter` 插入 `mediaMention` 节点。
+- `mediaMention` 节点 attrs 保存：
+
+```js
+{
+  mediaId: '<uuid>',
+  kind: 'image',
+  sourceLabel: '图片1',
+  realIndex: 1,
+  previewUrl: '/uploads/<uuid>.png'
+}
+```
+
+序列化时不会信任 `sourceLabel`，而是按服务端权威素材和稳定顺序重新生成标签。
+
+## 4. 删除、撤销、重做
+
+源站行为：
+
+- 光标在原子节点后方时，单次 Backspace 不一定直接删除节点。
+- 选中完整原子节点后，节点 class 会包含 `ProseMirror-selectednode`。
+- 选中节点再 Backspace，会删除整个 `@图片1`。
+- 删除 mention 后，上传素材仍保留。
+- `全部清空` 会同时清空编辑器和参考素材。
+
+原型 QA 中验证：
+
+- 删除原子节点后，文本变为 `让  挥手`。
+- 撤销恢复 `让 @图片1 挥手`。
+- 重做再次删除 mention。
+- `全部清空` 后：
+  - `mediaList` 为空；
+  - 编辑器为空；
+  - placeholder 恢复；
+  - 提交按钮禁用；
+  - 无可见任务面板。
+
+## 5. 参数选择
+
+源站参数：
+
+| 组 | 选项 |
 | --- | --- |
-| Container | `clientHeight=552`, `scrollHeight=3339`, `scroll-behavior:auto`, `scroll-snap-type:none` |
-| `scrollTop=0` | Form `x=390,y=275,width=880,height=152`; `position:static`; `top:auto`; `z-index:auto` |
-| `scrollTop=120` | Form `x=390,y=155,width=880,height=152`; style values unchanged |
-| Restore | `scrollTop` returned to `0` |
+| 比例 | 智能比例、16:9、9:16、1:1 |
+| 清晰度 | 720P、1080P |
+| 时长 | 5秒、10秒 |
+| 条数 | 1条、2条、3条、4条 |
+| 声音 | 有声、无声 |
 
-The form moves one-for-one with the scroll container. It is not sticky, fixed, scroll-snapped, or scroll-animated.
+原型默认值：
 
-### Click
+```js
+{
+  mode: 'reference_media',
+  ratio: 'adaptive',
+  resolution: '720p',
+  duration: 5,
+  count: 1,
+  generateAudio: true
+}
+```
 
-- Clicking the parameter trigger opens the source parameter popover. It does not alter the current selections until an option is clicked.
-- Clicking the mode combobox opens a listbox with `参考生成`, `首尾帧`, and `版权IP生成`; `参考生成` is selected.
-- Clicking the active mention-menu item inserts one atomic `@图片1` node and closes the menu.
-- Clicking the inserted mention keeps the editor active and adds `aml-arco-popover-open` to its inner alignment wrapper. The source tooltip is a `242 × 242px` white image-preview panel with `1px solid #D0D0E1`, radius `8px`, and shadow `rgba(0,0,0,.05) 0 15px 35px -2px`; it has no button or delete affordance.
-- Clicking `全部清空` resets references and editor content together. It also removes the `@` trigger and clear-all button and returns submit to its disabled style.
-- The submit button was queried and hover-tested only. It received no click event.
+浏览器 QA 验证项：
 
-### Hover
+- 将声音改成 `无声`。
+- 保持 `720P / 5秒 / 1条`。
+- Dry-run 最终请求包含 `"generate_audio": false`。
 
-Hover was applied to the ready submit button, `@` trigger, parameter trigger, and clear-all button. For all four, the checked computed properties—background, border, shadow, opacity, transform, ink, and cursor—remained the same as their resting values. Their source transition declarations remain in the design-token record.
+## 6. 提交与成本边界
 
-### Keyboard and editor
+源站真实提交按钮在取证中未点击。
 
-1. `browser type` entered `让 @` into the unique textbox.
-2. Ark converted the trailing `@` into `<span class="suggestion is-empty">@</span>` and opened the mention menu.
-3. The sole menu item had class `mentionListItem-jQvMWE active-Ae7A0B` immediately on open, establishing the keyboard-active state.
-4. Selecting it inserted one `contenteditable="false"`, draggable node labeled `@图片1`.
-5. The caret was placed after the node and ` 挥手` was inserted, producing exact editor text `让 @图片1 挥手`.
-6. A single `Backspace` with only a caret immediately after the atomic node did not delete it; the node count remained `1`.
-7. Selecting the complete atomic DOM range changed its class to `react-renderer node-mediaTagSlot ProseMirror-selectednode` and produced a range selection containing `@图片1`.
-8. `Backspace` in that selected-node state removed the mention. The editor became `<p class="ark-sender-richTextArea-paragraph">让  挥手</p>`, mention count became `0`, and the selection collapsed to a caret at text offset `2`.
-9. Mention removal left the uploaded reference list item intact (`1`), kept the mention menu closed, kept `全部清空` visible, and left submit ready (`disabled=false`, `#5252FF`, opacity `1`, pointer cursor).
-
-OpenCLI `browser type` has replace-all semantics for contenteditable fields. The trailing fragment was therefore inserted with a focused browser `execCommand("insertText")`, which triggered the live ProseMirror editor and preserved the atomic node.
-
-### Responsive
-
-- `1440 × 900`: full composer and submit visible.
-- `768 × 1024`: composer narrows, prompt wraps, all controls remain visible on one row.
-- `390 × 844`: the Ark page retains a wider inner layout and clips horizontally. Only the left part of the composer is visible; submit is off-screen. This is source behavior, not a capture defect.
-
-## State matrix
-
-| State | Source-backed result |
-| --- | --- |
-| Empty reference | `ark-video-composer-desktop.png`, `tablet.png`, and `mobile.png`; tile reads `参考内容`; no thumbnail; submit is disabled |
-| Uploaded reference | `ark-video-composer-reference-added.png`; one thumbnail labeled `图片1`; overlapping add button and `全部清空` appear |
-| `@` menu closed | No `.mentionList-BMGCpP` in DOM after insertion |
-| `@` menu open | `ark-video-composer-mention-menu.png`; body-level `react-renderer`, `160 × 103px`, `z-index:9999` |
-| `@` menu keyboard-active | First and only item carries `active-Ae7A0B` immediately after typing `@` |
-| Mention inserted | One `.node-mediaTagSlot`, `contenteditable=false`, `draggable=true`, label `@图片1` |
-| Mention focused | Editor stays active; inner wrapper receives `aml-arco-popover-open`; `242 × 242px` image-preview tooltip opens with no delete control |
-| Mention deleted | Select atomic node → class adds `ProseMirror-selectednode` → Backspace; result text `让  挥手`, mention count `0`, reference count `1`, menu closed, submit still ready |
-| Parameter menu open | Popover lists all ratio, resolution, duration, quantity, and sound choices below |
-| Parameter selected | Trigger shows `智能比例`, `720P`, `5秒`, `1条`, `有声` |
-| Empty prompt | Guidance appears in the empty-state captures; disabled submit has `disabled=true`, opacity `0.5`, cursor `not-allowed` |
-| Valid prompt | With upload and `让 @图片1 挥手`, submit has `disabled=false`, opacity `1`, `#5252FF`, pointer cursor |
-| Clear-all | Click `全部清空`; result is empty editor/placeholder, `0` references, `0` images, `0` mentions, `0` `@` triggers, `0` clear-all buttons, empty file input, and disabled submit |
-
-## Complete mention-removal evidence
-
-Selected state:
+原型提交按钮默认只做 Dry-run：
 
 ```text
-node class: react-renderer node-mediaTagSlot ProseMirror-selectednode
-selection type: Range
-selection text: @图片1
-anchor/focus: paragraph child offsets 1 → 2
+POST /api/videoGeneration/dryRun
 ```
 
-After Backspace:
+Dry-run 验证：
 
-```html
-<p class="ark-sender-richTextArea-paragraph">让  挥手</p>
-```
+- 不调用 Ark。
+- 不创建真实任务。
+- 不消耗费用。
+- 返回最终 API 请求体和阻塞项。
+
+真实生成只能通过预览抽屉中的显式确认进入：
 
 ```text
-mentionCount=0
-referenceListItems=1
-menuOpen=false
-clearButtons=1
-submit.disabled=false
-submit.background=#5252FF
-submit.opacity=1
-submit.cursor=pointer
+POST /api/videoGeneration/createTask
 ```
 
-## Clear-all reset evidence
+必须满足：
 
-After clicking `.clear-all-button-rVxGU5`, the editor is the source empty document:
+- `APP_REAL_GENERATION_ENABLED=true`
+- `ARK_API_KEY` 存在于服务端
+- 素材 URL 是公开 HTTPS 或 Ark 资产
+- 当前 Dry-run 返回有效一次性确认 token
 
-```html
-<p class="ark-sender-richTextArea-paragraph is-empty is-editor-empty"
-   data-placeholder="使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。">
-  <br class="ProseMirror-trailingBreak">
-</p>
-```
+## 7. Submit 可用性
 
-Exact reset state:
+源站观察：
 
-```text
-editorText=""
-referenceListItems=0
-referenceLabels=0
-referenceImages=0
-mentionCount=0
-menuOpen=false
-plusTriggers=0
-mentionTriggers=0
-clearButtons=0
-fileInput.files=[]
-uploaderClass="wrapper-WWLMTm wrapper-empty-mwy5cP"
-uploaderText="参考内容"
-```
-
-The reset paragraph remains `15px/26px`, weight `400`, color `#0B0B0F`, transparent background, and text cursor. The uploader wrapper is `86 × 78px`, transparent, and uses the base `14px/21px` stack. Submit becomes `disabled=true`, background `#ACB4FF`, opacity `0.5`, radius `9999px`, and `cursor:not-allowed`.
-
-## Parameter popover content
-
-| Group | Exact source choices | Selected in trigger |
-| --- | --- | --- |
-| 视频比例 | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `智能` | `智能比例` |
-| 分辨率 | `480P`, `720P`, `1080P`, `4K` | `720P` |
-| 视频时长 | `按秒数`, `智能时长`, `4s` through `15s` | `5秒` |
-| 选择生成数量 | `1` through `8` | `1条` |
-| 输出声音 | `开`, `关` | `有声` |
-
-## Mention menu content and DOM
-
-```text
-全部   图片
-图片1
-```
-
-```html
-<div class="react-renderer">
-  <div class="mentionList-BMGCpP mentionListWithTabs-nxTEO8">
-    <div class="mentionTabs-mXN7co" role="tablist">
-      <button role="tab" aria-selected="true"><span>全部</span></button>
-      <button role="tab" aria-selected="false"><span>图片</span></button>
-    </div>
-    <div class="mentionListItems-M_bmDA">
-      <div class="mentionListScroll-wxPe9G">
-        <div class="mentionListItem-jQvMWE active-Ae7A0B">
-          <img class="ark-sender-mediaIcon">
-          <div class="label-ecmScL">图片1</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-```
-
-## Submit-state evidence
-
-| Condition | Disabled | Background | Opacity | Cursor |
+| 状态 | disabled | 背景 | 透明度 | 鼠标 |
 | --- | --- | --- | --- | --- |
-| Empty default composer | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
-| Reference uploaded and valid editor content | `false` | `#5252FF` | `1` | `pointer` |
-| Mention deleted, reference retained | `false` | `#5252FF` | `1` | `pointer` |
-| After `全部清空` | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
+| 空态 | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
+| 已上传素材 | `false` | `#5252FF` | `1` | `pointer` |
+| 已输入 `让 @图片1 挥手` | `false` | `#5252FF` | `1` | `pointer` |
+| 删除 mention 但保留素材 | `false` | `#5252FF` | `1` | `pointer` |
 
-The source also enabled submit after the reference upload before a textual prompt was inserted. A clone should therefore derive readiness from Ark's accepted-input model rather than requiring non-empty plain text alone.
+实现策略：提交可用性来自“有 ready 素材或提示词非空”，与源站“上传后可提交”的行为一致。
 
-## Verbatim source copy
+## 8. Hover 行为
 
-```text
-参考内容
-使用@可快速引用上传的文件，如：参考@视频1中的动作，生成@图片2和@图片3中的角色打斗的视频。
-图片1
-参考生成
-智能比例
-720P
-5秒
-1条
-有声
-@
-全部清空
-0.046 元/千 tokens
-```
+源站对以下元素做了 hover 取证：
+
+- ready submit；
+- 独立 `@` trigger；
+- 参数 trigger；
+- `全部清空`。
+
+观察结果：背景、边框、阴影、透明度、transform、文字色和 cursor 都没有可见计算值变化。实现中保留基础 transition，不额外增加浮起或缩放。
+
+## 9. 清空行为
+
+点击源站 `全部清空` 后：
+
+- 编辑器恢复空文档；
+- 参考素材数量为 `0`；
+- 缩略图数量为 `0`；
+- mention 数量为 `0`；
+- 独立 `@` trigger 消失；
+- `全部清空` 消失；
+- 提交按钮禁用；
+- 文件 input 清空。
+
+原型已按该语义实现：`store.clearDraft()` 会重置素材、编辑器、参数、Dry-run 结果、任务列表和索引计数。
+
+## 10. 响应式行为
+
+| 视口 | 源站行为 |
+| --- | --- |
+| `1440 × 900` | Composer 完整可见。 |
+| `768 × 1024` | Composer 仍完整可见，提示词可换行。 |
+| `390 × 844` | 方舟外壳不做移动端重排，页面横向裁剪，提交按钮在屏幕外。 |
+
+原型只复刻 Composer，不复刻方舟整页横向偏移；因此移动端全页对比中的左右位置差异不判为缺陷。
+
+## 11. 不在范围内的行为
+
+- 方舟模板库/图库加载。
+- 真实任务结果展示瀑布流。
+- 登录、账号、权限和计费。
+- 源站私有 BFF 协议。
+- 方舟图片预览 tooltip 的完整交互细节。
+- 真实付费生成自动化验证。
+
+## 12. 对测试的要求
+
+至少覆盖：
+
+- 上传成功后显示 `图片1`。
+- `@` 菜单插入原子节点。
+- 序列化输出三层提示词和 `image_url`。
+- Dry-run 不调用 Ark。
+- 删除素材时同步清理对应 mention。
+- 真实生成确认 token 错误时不调用 createTask。
+- createTask 不自动重试。
+- 轮询只查询已有任务，不重新创建任务。

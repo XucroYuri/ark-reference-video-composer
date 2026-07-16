@@ -153,7 +153,7 @@ function seedQaReferenceFromLocation() {
     const media = JSON.parse(payload)
     store.addMedia(media)
   } catch {
-    // Ignore malformed QA payloads; this path is only for local browser verification.
+    // 本入口只用于本地浏览器 QA；URL 参数异常时直接忽略，避免影响正常页面。
   }
 }
 

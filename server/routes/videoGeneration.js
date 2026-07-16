@@ -296,7 +296,7 @@ export function createVideoGenerationRouter({
         return fail(res, 40006, 'Dry-run 请求参数无效', prepared.error)
       }
 
-      // Keep this dependency visible for Task 5. Dry-run never invokes Ark.
+      // 保留依赖可见性，便于迁移时理解边界；Dry-run 绝不调用 Ark。
       void arkClient
       void confirmationStore
 

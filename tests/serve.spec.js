@@ -62,25 +62,25 @@ async function waitForFrontend(url, child, getOutput, timeout = 15000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(`serve exited before frontend readiness\n${getOutput()}`)
+      throw new Error(`serve 在前端就绪前已退出\n${getOutput()}`)
     }
     try {
       const response = await fetch(url)
       if (response.ok) return response
     } catch {
-      // The dev server is still starting.
+      // 开发服务器仍在启动中，继续短轮询。
     }
     await delay(100)
   }
-  throw new Error(`frontend did not become reachable\n${getOutput()}`)
+  throw new Error(`前端服务在超时时间内不可访问\n${getOutput()}`)
 }
 
 afterEach(async () => {
   await Promise.all([...activeChildren].map((child) => stopServe(child)))
 })
 
-describe('combined development runtime', () => {
-  it('keeps the frontend reachable when the later server entrypoint is absent', async () => {
+describe('组合式本地开发运行时', () => {
+  it('服务端入口缺失时仍保持前端可访问', async () => {
     const port = await findAvailablePort()
     const fixtureDir = await mkdtemp(join(tmpdir(), 'ark-missing-server-'))
     const missingEntrypoint = join(fixtureDir, 'server-entrypoint-that-does-not-exist.js')
@@ -93,7 +93,7 @@ describe('combined development runtime', () => {
 
       const response = await waitForFrontend(`http://127.0.0.1:${port}/`, child, getOutput)
       expect(await response.text()).toContain('方舟参考视频生成')
-      expect(getOutput()).toContain(`${missingEntrypoint} is not available; starting the frontend only`)
+      expect(getOutput()).toContain(`未找到 ${missingEntrypoint}，仅启动前端`)
 
       const result = await stopServe(child)
       expect(result.code).toBe(0)
@@ -102,7 +102,7 @@ describe('combined development runtime', () => {
     }
   }, 20000)
 
-  it('propagates the frontend child exit code instead of reporting success', async () => {
+  it('前端子进程异常退出时透传退出码而不是误报成功', async () => {
     const fakeBin = await mkdtemp(join(tmpdir(), 'ark-serve-test-'))
     const fakeNpm = join(fakeBin, 'npm')
     await writeFile(fakeNpm, '#!/bin/sh\nif [ "$2" = "dev:server" ]; then exit 0; fi\nsleep 1\nexit 7\n')

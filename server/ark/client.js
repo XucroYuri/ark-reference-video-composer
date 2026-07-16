@@ -25,7 +25,7 @@ async function cancelResponseBody(response) {
   try {
     await response.body?.cancel()
   } catch {
-    // Preserve the original response validation error.
+    // 这里保留原始响应校验错误，不让取消响应体的异常覆盖真正原因。
   }
 }
 

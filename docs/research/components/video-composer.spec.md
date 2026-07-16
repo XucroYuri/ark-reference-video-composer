@@ -1,426 +1,307 @@
-# Video Composer Specification
+# 视频生成 Composer 组件规格
 
-## Overview
+本文是实现 `src/view/videoGeneration/` 的组件契约。后续修改 UI、编辑器或请求结构时，先对照本文确认不要破坏源站语义。
 
-- **Assembly target:** `src/view/videoGeneration/index.vue`
-- **Planned child components:** `ReferenceMediaPanel.vue`, `PromptComposer.vue`, `MediaSuggestionMenu.vue`, `GenerationOptionsBar.vue`
-- **Source title:** `火山方舟 - 体验`
-- **Source URL:** `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`
-- **Clone boundary:** `form.agentic-sender` only
-- **Interaction model:** pointer and keyboard state; normal flow in a native scroller
-- **Source framework evidence:** Arco control classes plus a Tiptap/ProseMirror contenteditable editor
-- **Builder status:** source-backed for visual implementation, upload, menu, atomic insertion/removal, clear-all reset, option overlays, and submit states
+## 1. 基本信息
 
-Resolved provenance: commits `f43c499` and `e300926` preserved an earlier in-app browser timeout. The authenticated OpenCLI session later supplied real DOM, CSSOM, screenshots, and interactions; the old blocking statements are superseded.
-
-## Screenshots
-
-| State | Local source evidence | SHA-256 |
-| --- | --- | --- |
-| Desktop empty | `docs/design-references/ark-video-composer-desktop.png` (`1440 × 900`) | `b07de7f4d93dd81f03c0aa3b580322bbe81ab9dc8735132523341a764491d7da` |
-| Tablet empty | `docs/design-references/ark-video-composer-tablet.png` (`768 × 1024`) | `258f490da5012b57deea1ebec3ddc462b88b309d498ba8a3e3ca551f65fcca12` |
-| Mobile empty/clipped | `docs/design-references/ark-video-composer-mobile.png` (`390 × 844`) | `ce187a1ad38e0b94523e6b2bd6123d698c6d7972c188cbf73ddf1c381c17ced3` |
-| Reference added | `docs/design-references/ark-video-composer-reference-added.png` (`1440 × 900`) | `dd7221e16b1141483ea6cbf971bf32514e1e6a43df6d567b3da46196c8ba4ebc` |
-| Mention menu | `docs/design-references/ark-video-composer-mention-menu.png` (`1440 × 900`) | `199aef922f4984f1d206985b808e6157c273aedec9471b042b986686315d55a0` |
-| Atomic reference inserted | `docs/design-references/ark-video-composer-reference-inserted.png` (`1440 × 900`) | `9d214626d91e426899e98bf22e6e96bec7a9d98dea04eda072e438fa886555c2` |
-
-## DOM Structure
-
-The bounded live hierarchy is:
-
-```html
-<form class="aml-arco-form ... agentic-sender agentic-shell-lwLNKC">
-  <div class="input-row-c_D7ti">
-    <div class="uploader-slot-zclRZA">
-      <div data-testid="stacked-reference-uploader">
-        <div class="flyout-FKuUMh ...">
-          <div class="scroll-wrap-Brx6K6">
-            <div class="row-v1i0Ul">
-              <div data-testid="video-sender-reference-media-uploader">
-                <ul>
-                  <li class="wrapper-TxAYAb">
-                    <div class="item-Qrqf6d">
-                      <!-- uploaded image frame, img, 图片1 overlay -->
-                    </div>
-                  </li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-        <button data-testid="stacked-reference-trigger" aria-label="上传参考文件">
-          <!-- inline plus SVG -->
-        </button>
-      </div>
-    </div>
-    <div class="prompt-slot-_8JjXg">
-      <div class="ark-sender-richTextArea ...">
-        <div class="tiptap ProseMirror" contenteditable="true" role="textbox">
-          <p class="ark-sender-richTextArea-paragraph">
-            让
-            <span class="react-renderer node-mediaTagSlot"
-                  contenteditable="false" draggable="true">
-              <span data-node-view-wrapper contenteditable="false" draggable="true">
-                <span style="display:inline-flex;align-items:center;vertical-align:middle;line-height:0;cursor:grab">
-                  <span class="ark-sender-mediaTag ark-sender-mediaTag-imageTag">
-                    <img class="ark-sender-mediaIcon">
-                    <span class="ark-sender-mediaTag-label">@图片1</span>
-                  </span>
-                </span>
-              </span>
-            </span>
-            挥手
-          </p>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="actions-row-dm34Mw">
-    <div class="primary-slot-HpIhb3">
-      <div role="combobox">参考生成</div>
-      <div data-testid="video-sender-ratio-resolution-config-dropdown">
-        智能比例 / 720P / 5秒 / 1条 / 有声
-      </div>
-      <button class="triggerButton-bW4rqY">@</button>
-    </div>
-    <div class="submit-slot-G9_diN">
-      <button class="clear-all-button-rVxGU5">全部清空</button>
-      <div class="aml-arco-statistic">0.046元/千 tokens</div>
-      <button data-testid="video-sender-submit-button" type="button">
-        <!-- inline upward-arrow SVG -->
-      </button>
-    </div>
-  </div>
-</form>
-```
-
-Empty-state variation:
-
-- `stacked-reference-uploader` has `wrapper-empty-mwy5cP`.
-- It contains the one hidden file input and the `参考内容` upload tile.
-- The thumbnail list, plus button, standalone `@` trigger, and clear-all button are absent.
-- The editor shows guidance and the submit button is disabled.
-
-## Computed Styles
-
-All values in this section are direct `getComputedStyle()` results at `1280 × 723`.
-
-### Form shell
-
-```css
-display: flex;
-flex-direction: column;
-box-sizing: border-box;
-width: 880px;
-height: 152px;
-min-width: 0px;
-min-height: 0px;
-padding: 16px;
-background-color: rgb(255, 255, 255);
-border: 1px solid rgb(224, 224, 235);
-border-radius: 16px;
-box-shadow: rgba(0, 0, 0, 0.04) 0px 1px 3px 0px;
-overflow: hidden;
-font-size: 14px;
-font-weight: 400;
-line-height: 21px;
-color: rgb(11, 11, 15);
-```
-
-### Rows
-
-```css
-/* input row */
-width: 846px;
-height: 78px;
-display: flex;
-flex-direction: row;
-row-gap: 12px;
-column-gap: 16px;
-align-items: flex-start;
-
-/* actions row */
-width: 846px;
-height: 28px;
-display: flex;
-margin: 12px 0 0;
-gap: 8px;
-justify-content: space-between;
-align-items: center;
-```
-
-### Reference tile
-
-- Uploader wrapper: `86 × 78px`, `position:relative`, `flex-shrink:0`.
-- Reference scroll container: `82 × 78px`, `display:flex`, `gap:6px`, radius `10px`, `overflow:auto hidden`.
-- List item: `78 × 78px`, `position:relative`, `z-index:3`.
-- Tile: `78 × 78px`, `position:relative`, radius `12px`, `cursor:grab`.
-- Image: `76 × 76px`, `object-fit:cover`, `object-position:50% 50%`; uploaded source has natural size `941 × 928`.
-- `图片1` label: `64 × 16px`, `"PingFang SC" 11px/16px`, letter-spacing `0.033px`, white, ellipsis.
-- Add button: `24 × 24px`, absolute, `z-index:21`, `#F6F7FA`, `1px solid white`, radius `100px`.
-
-### Prompt editor
-
-```css
-/* prompt slot */
-width: 744px;
-height: 72px;
-display: flex;
-flex: 1 1 0%;
-gap: 12px;
-cursor: text;
-
-/* scroll shell */
-width: 744px;
-height: 78px;
-min-height: 78px;
-padding: 6px 0 0;
-margin: -6px 0 0;
-overflow: hidden auto;
-
-/* editor */
-width: 744px;
-height: 52px;
-min-height: 52px;
-position: relative;
-white-space: break-spaces;
-
-/* paragraph */
-height: 26px;
-margin: 0;
-font-size: 15px;
-font-weight: 400;
-line-height: 26px;
-white-space: pre-wrap;
-```
-
-### Atomic mention
-
-- Outer node: `84.0781 × 26px`, inline-block, `padding-right:3px`, `margin-left:3px`, `contenteditable=false`, draggable.
-- Node-view wrapper: `81.0781 × 24px`, inline-block, `vertical-align:top`.
-- Alignment wrapper: `81.0781 × 22px`, inline-flex, centered, `line-height:0`, `cursor:grab`.
-- Pill: `73.0781 × 22px`, flex, `gap:4px`, `margin:0 4px`, radius `4px`.
-- Image: `20 × 20px`, radius `4px`, `object-fit:cover`.
-- Label: `49.0781 × 22px`, `"PingFang SC" 15px/22px`, letter-spacing `0.045px`, `#6C7191`.
-
-### Bottom controls
-
-| Element | Exact computed values |
+| 项 | 内容 |
 | --- | --- |
-| Primary slot | `600.5 × 28px`; flex; gap `8px`; `overflow:auto hidden` |
-| Mode combobox | `110 × 28px`; `position:relative`; pointer cursor |
-| Parameter trigger | `244.734 × 28px`; `padding:0 10px`; `1px solid #E0E0EB`; radius `6px`; `14px/22px` |
-| Mention trigger | `28 × 28px`; centered flex; white; `1px solid #E1E4F2`; radius `6px` |
-| Clear-all | `81.1562 × 28px`; `padding:0 8px`; gap `4px`; transparent; `12px/18px #787C91` |
-| Price | `120.344 × 28px`; `padding:0 8px`; `13px/28px #6E718C` |
-| Ready submit | `28 × 28px`; `#5252FF`; white; radius `9999px`; opacity `1`; pointer |
-| Disabled submit | `28 × 28px`; `#ACB4FF`; opacity `0.5`; `cursor:not-allowed` |
+| 装配入口 | `src/view/videoGeneration/index.vue` |
+| 子组件 | `ReferenceMediaPanel.vue`、`PromptComposer.vue`、`MediaSuggestionMenu.vue`、`GenerationOptionsBar.vue`、`RequestPreviewDrawer.vue`、`GenerationTaskPanel.vue` |
+| 源站标题 | 火山方舟 - 体验 |
+| 源站地址 | `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128` |
+| 复刻边界 | 只复刻 `form.agentic-sender` 这一块 Composer |
+| 交互模型 | 指针 + 键盘；普通文档流；非滚动驱动、非定时动画 |
+| 技术依据 | 源站使用 Arco 控件样式 + Tiptap/ProseMirror contenteditable 编辑器 |
 
-## States and Behaviors
+早期 in-app browser 取证曾超时；后续 OpenCLI/浏览器插件已拿到真实 DOM、CSSOM、截图和交互证据，旧超时记录不再是阻塞项。
 
-### Empty reference / disabled submit
+## 2. 源站截图依据
 
-- One upload tile reads `参考内容`.
-- The editor displays the verbatim usage guidance.
-- Submit has `disabled=true`, opacity `0.5`, background `#ACB4FF`, and `cursor:not-allowed`.
+| 状态 | 文件 | 尺寸 |
+| --- | --- | --- |
+| 桌面空态 | `docs/design-references/ark-video-composer-desktop.png` | `1440 × 900` |
+| 平板空态 | `docs/design-references/ark-video-composer-tablet.png` | `768 × 1024` |
+| 移动端空态/裁剪 | `docs/design-references/ark-video-composer-mobile.png` | `390 × 844` |
+| 已上传参考图 | `docs/design-references/ark-video-composer-reference-added.png` | `1440 × 900` |
+| `@` 菜单 | `docs/design-references/ark-video-composer-mention-menu.png` | `1440 × 900` |
+| 已插入 `@图片1` | `docs/design-references/ark-video-composer-reference-inserted.png` | `1440 × 900` |
 
-### Uploaded reference / ready submit
+最终实现对比：
 
-- Uploading the authorized PNG creates one thumbnail labeled `图片1` and a 24px overlapping plus button.
-- `全部清空` and the standalone `@` trigger appear.
-- Submit becomes `disabled=false`, opacity `1`, background `#5252FF`, and pointer cursor.
-- Source evidence showed readiness immediately after accepted upload, before textual prompt entry.
+- `docs/design-references/ark-composer-comparison-desktop.png`
+- `docs/design-references/ark-composer-comparison-mobile.png`
 
-### Mention menu open
+## 3. 目标 DOM 结构
 
-- Trigger: type `@` in the editor with one reference available.
-- Portal: direct child of `body`, class `react-renderer`, `position:absolute`, `160 × 103px`, `z-index:9999`.
-- Panel: white, `1px solid #F0F2FA`, radius `12px`, overflow hidden, two-part shadow.
-- Tabs: `全部` selected and `图片` unselected.
-- Sole item: `图片1`, class includes `active-Ae7A0B`, `142 × 48px`, `padding:6px`, `gap:8px`, background `#F7F7F9`, radius `4px`.
-- Item thumbnail: `36 × 36px`, radius `6px`.
-
-### Mention inserted
-
-- Exact editor text: `让 @图片1 挥手`.
-- Exact document shape: plain text, one atomic non-editable draggable node, plain text.
-- The menu closes after selection.
-- Clicking the mention leaves the editor active and adds `aml-arco-popover-open` to its inner wrapper.
-- The focused preview is a `242 × 242px` white panel with `1px solid #D0D0E1`, radius `8px`, shadow `rgba(0,0,0,.05) 0 15px 35px -2px`, and a `224 × 224px` contained image. It exposes no delete control.
-- One Backspace with only a caret immediately after the atomic node does not remove it.
-
-### Mention selected and deleted
-
-- Trigger selected state by selecting the complete atomic node; Ark adds `ProseMirror-selectednode` to `.node-mediaTagSlot`.
-- Selected class: `react-renderer node-mediaTagSlot ProseMirror-selectednode`.
-- Browser selection: `Range`, paragraph child offsets `1` through `2`, containing `@图片1`.
-- Backspace in this state deletes the mention completely.
-- Resulting editor HTML: `<p class="ark-sender-richTextArea-paragraph">让  挥手</p>`.
-- Resulting editor text: `让  挥手`; mention count `0`; menu closed.
-- The uploaded reference remains (`1` list item), clear-all remains visible, and submit remains ready with `disabled=false`, background `#5252FF`, opacity `1`, pointer cursor.
-
-### Mode menu
-
-- Trigger: click the combobox.
-- `aria-expanded` changes to `true`.
-- Options: `参考生成` selected, `首尾帧`, `版权IP生成`.
-- Each option is `40px` high with `13px/22px` type.
-- Selected option is `#5252FF` on `#EDEFFC`; unselected options are `#0B0B0F` on white.
-
-### Parameter menu
-
-- Trigger: click `[data-testid=video-sender-ratio-resolution-config-dropdown]`.
-- Portal layer is `z-index:1000`.
-- Content is `497 × 355px`, `padding:12px 3px 12px 12px`, white, `1px solid #E0E0EB`, radius `8px`, with the same two-part `5%` black shadow used by source popovers.
-- Current trigger values are `智能比例`, `720P`, `5秒`, `1条`, `有声`.
-- Full choices are recorded in `docs/research/BEHAVIORS.md`.
-
-### Hover
-
-No computed-property change was observed for the ready submit, mention trigger, parameter trigger, or clear-all button across background, border, shadow, opacity, transform, ink, and cursor. Keep the declared transitions; add no scale or shadow effect.
-
-### Clear-all
-
-- Trigger: click `.clear-all-button-rVxGU5` after a reference has been uploaded.
-- Editor resets to empty text with one paragraph carrying `is-empty is-editor-empty`, the usage guidance in `data-placeholder`, and a `ProseMirror-trailingBreak`.
-- Reference list items, `图片1` labels, reference images, atomic mentions, plus triggers, standalone `@` triggers, and clear-all buttons all become `0`.
-- The file input's `files` list becomes empty.
-- Uploader class becomes `wrapper-WWLMTm wrapper-empty-mwy5cP`; it is `86 × 78px`, transparent, and displays `参考内容`.
-- Empty paragraph remains `400 15px/26px`, `#0B0B0F`, transparent, with text cursor.
-- Submit changes to `disabled=true`, background `#ACB4FF`, opacity `0.5`, radius `9999px`, and `cursor:not-allowed`.
-- Mention menu remains closed; no task/result node appears.
-
-Exact reset editor DOM:
-
-```html
-<p class="ark-sender-richTextArea-paragraph is-empty is-editor-empty"
-   data-placeholder="使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。">
-  <br class="ProseMirror-trailingBreak">
-</p>
-```
-
-### Submit
-
-- Never invoke Ark generation during automated visual testing.
-- Clone testing stops at Dry-run/readiness.
-- The source submit received no click during reconnaissance.
-
-### Scroll and time
-
-- Form is `position:static` and moves with the Ark content scroller.
-- Scroll container uses `scroll-behavior:auto` and `scroll-snap-type:none`.
-- Time-driven state: N/A.
-
-## Per-State Content
-
-### Empty/default
+实现不需要复制源站 class 名，但必须保留以下结构语义：
 
 ```text
-参考内容
-使用@可快速引用上传的文件，如：参考@视频1中的动作，生成@图片2和@图片3中的角色打斗的视频。
-参考生成
-智能比例
-720P
-5秒
-1条
-有声
-0.046 元/千 tokens
+Composer 页面
+├── 标题：体验视频生成，让创意摇动
+├── 表单 shell
+│   ├── 输入行
+│   │   ├── ReferenceMediaPanel
+│   │   │   ├── 空态：参考内容上传 tile
+│   │   │   └── 已上传：缩略图列表 + 图片N 标签 + 叠加加号
+│   │   └── PromptComposer
+│   │       ├── 空态 placeholder
+│   │       ├── Tiptap ProseMirror 编辑器
+│   │       └── mediaMention 原子节点
+│   └── 操作行
+│       ├── GenerationOptionsBar
+│       │   ├── 模式：参考生成
+│       │   └── 参数：比例 / 清晰度 / 时长 / 条数 / 声音
+│       ├── 独立 @ 触发按钮
+│       ├── 全部清空
+│       ├── 价格：0.046 元/千 tokens
+│       └── 提交 Dry-run 按钮
+├── GenerationTaskPanel
+└── RequestPreviewDrawer
 ```
 
-### Reference added
+空任务状态不渲染 `GenerationTaskPanel`；只有提交中或存在真实任务记录时才显示。
 
-```text
-参考内容
-图片1
-参考生成
-智能比例
-720P
-5秒
-1条
-有声
-@
-全部清空
-0.046 元/千 tokens
+## 4. 尺寸和布局要求
+
+| 区域 | 要求 |
+| --- | --- |
+| Composer shell | 基准宽度约 `880px`，白底，`16px` 圆角，浅色边框，隐藏溢出。 |
+| 输入行 | 上传区固定宽度；编辑器占剩余空间；顶部对齐。 |
+| 上传 tile | 约 `78 × 78px`；缩略图圆角；右下叠加加号。 |
+| 操作行 | 高度约 `28px`；左侧参数控件，右侧清空/价格/提交。 |
+| 参数 trigger | 紧凑展示 `智能比例 720P 5秒 1条 有声/无声`。 |
+| 提交按钮 | 圆形；可用态紫色，禁用态浅紫并降低透明度。 |
+
+源站在 `390px` 宽度下不做移动端重排，而是发生横向裁剪。原型可以不复刻方舟外壳偏移，但 Composer 自身应保持最小宽度和横向裁剪语义。
+
+## 5. ReferenceMediaPanel 规格
+
+职责：
+
+- 负责展示参考素材空态和已上传列表。
+- 负责调用 `store.uploadMedia(file)`。
+- 负责本地上传中 preview。
+- 删除按钮只发出 remove 事件，具体删除和 mention 清理由 store/page 处理。
+
+关键行为：
+
+- 仅接受 `image/png`、`image/jpeg`、`image/webp`。
+- 单文件最大 `30MB`。
+- ready 素材显示 `图片${realIndex}`。
+- 上传中显示 `上传中`。
+- 删除已被提示词引用的素材前，需要确认。
+
+迁移提示：
+
+- 在 `hc-gpt-web` 中可以继续使用 Element Plus Upload。
+- 正式上传服务应由后端返回素材 ID 和预览 URL，前端不要自己生成真实生成 URL。
+
+## 6. PromptComposer / mediaMention 规格
+
+`@图片1` 必须是 Tiptap 原子节点，而不是普通字符串。
+
+节点属性：
+
+```js
+{
+  mediaId: '素材 ID',
+  kind: 'image',
+  sourceLabel: '图片1',
+  realIndex: 1,
+  previewUrl: '/uploads/<uuid>.png'
+}
 ```
 
-### Mention menu
+显示行为：
 
-```text
-让 @
-全部
-图片
-图片1
+- 编辑器内展示为 `@图片1` pill。
+- 节点不可编辑。
+- 节点参与撤销/重做。
+- `@` 菜单没有 ready 素材时不应插入无效 mention。
+
+删除行为：
+
+- 删除素材时，store 通过 `removeMentionsByMediaId` 清理文档中对应节点。
+- 删除 mention 不删除素材。
+- `全部清空` 同时清理素材和编辑器。
+
+## 7. MediaSuggestionMenu 规格
+
+打开条件：
+
+- 编辑器中输入 `@`；
+- 至少存在一个 ready 素材。
+
+菜单内容：
+
+- 分类 tab 目前保留 `全部` 和 `图片`。
+- 每个候选项展示缩略图和 `图片N`。
+- 打开时首个候选项可被键盘选中。
+
+实现要求：
+
+- 菜单 Teleport 到 `body`，避免被 Composer shell 裁剪。
+- 点击或键盘确认后插入 `mediaMention` 节点。
+- stale suggestion 会话要能退出，避免引用旧 query 或旧列表。
+
+## 8. GenerationOptionsBar 规格
+
+默认配置：
+
+```js
+{
+  mode: 'reference_media',
+  ratio: 'adaptive',
+  resolution: '720p',
+  duration: 5,
+  count: 1,
+  generateAudio: true
+}
 ```
 
-### Mention inserted
+允许值：
 
-```text
-让 @图片1 挥手
+| 字段 | 允许值 |
+| --- | --- |
+| `ratio` | `adaptive`、`16:9`、`9:16`、`1:1` |
+| `resolution` | `720p`、`1080p` |
+| `duration` | `5`、`10` |
+| `count` | `1`、`2`、`3`、`4` |
+| `generateAudio` | `true`、`false` |
+
+参数 popover 使用原生 select，原因是：
+
+- 键盘可操作；
+- 测试稳定；
+- 迁移成本低；
+- 不依赖 Ark 私有下拉组件。
+
+## 9. RequestPreviewDrawer 规格
+
+Dry-run 预览必须展示：
+
+- 可读提示词；
+- 控制台兼容模板；
+- 模型规范文本；
+- 媒体映射；
+- 最终 API 请求；
+- 真实生成阻塞项；
+- 复制 JSON 按钮；
+- 满足真实生成条件时才显示/允许确认真实生成。
+
+真实生成按钮必须受这些条件保护：
+
+- `result.realReady === true`
+- 当前 `confirmationToken` 非空
+- 用户显式点击确认
+
+前端即使隐藏/禁用按钮，服务端仍必须再次校验。
+
+## 10. GenerationTaskPanel 规格
+
+任务面板只负责展示真实任务状态：
+
+- `submitting`
+- `queued`
+- `running`
+- `succeeded`
+- `failed`
+- `cancelled`
+
+空任务时不显示面板。这是最终视觉 QA 中修复的 P2 问题。
+
+成功任务如果包含 `content.video_url`，显示 `<video controls>`。该 URL 必须是 HTTPS，store 会拒绝非 HTTPS 成功结果。
+
+## 11. 序列化契约
+
+输入：
+
+```js
+{
+  doc,
+  mediaList,
+  config,
+  model
+}
 ```
 
-### Mention deleted, reference retained
+输出：
 
-```text
-让  挥手
-图片1
-全部清空
-0.046 元/千 tokens
+```js
+{
+  readablePrompt: '让 @图片1 挥手',
+  templatePrompt: '让 <<<image_1_1>>> 挥手',
+  modelPrompt: '让 【图片 1】 挥手',
+  media: [
+    {
+      id: '<mediaId>',
+      realIndex: 1,
+      canonicalIndex: 1,
+      url: 'local://<mediaId>',
+      notPublic: true
+    }
+  ]
+}
 ```
 
-### Clear-all reset
+最终 Ark 请求：
 
-```text
-参考内容
-使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。
-参考生成
-智能比例
-720P
-5秒
-1条
-有声
-0.046 元/千 tokens
+```js
+{
+  model: 'doubao-seedance-2-0-260128',
+  content: [
+    { type: 'text', text: '让 【图片 1】 挥手' },
+    {
+      type: 'image_url',
+      role: 'reference_image',
+      image_url: { url: '...' }
+    }
+  ],
+  ratio: 'adaptive',
+  resolution: '720p',
+  duration: 5,
+  generate_audio: false
+}
 ```
 
-## Assets
+序列化规则：
 
-- Local reference asset: `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png`, `86,673` bytes.
-- Use that local file for the clone's fixture/preview; do not copy the expiring signed Ark upload URL.
-- Uploaded image natural dimensions as decoded by Ark: `941 × 928`.
-- Tile and mention crops both use `object-fit:cover`.
-- Upload, plus, parameter, clear, `@`, and submit glyphs are inline SVG in the source DOM. Recreate them as local SVG components; no hotlink is required.
-- Video/audio/canvas assets inside the clone boundary: N/A.
-- Layered background imagery inside the clone boundary: N/A.
+- `canonicalIndex` 按文档首次出现顺序计算。
+- 没有出现在文档里的素材排在已引用素材之后。
+- 缺失素材不静默吞掉，要进入 errors/blockers。
+- 非图片素材不生成 `image_url`。
+- 本地 URL 标记 `notPublic`，真实生成前必须阻塞。
 
-## Responsive Behavior
+## 12. 成本与安全要求
 
-### Desktop `1440 × 900`
+- 自动化测试和浏览器 QA 只能走 Dry-run。
+- 不允许在测试中调用真实 Ark。
+- `ARK_API_KEY` 只能在服务端读取。
+- 不允许创建 `VITE_ARK_API_KEY`。
+- Ark 错误响应必须脱敏。
+- createTask 不自动重试。
+- 真实生成 token 必须一次性消费。
+- 查询轮询只查询已有任务，不创建新任务。
 
-- Full composer visible in one centered row group.
-- The source CSS form remains `880 × 152px` at the live desktop geometry.
-- Prompt guidance remains one line.
-- Submit stays at the far right.
+## 13. 测试覆盖要求
 
-### Tablet `768 × 1024`
+至少覆盖：
 
-- Full form remains visible in the narrowed main surface.
-- Prompt guidance wraps to two lines.
-- Uploader stays left; controls and submit remain visible on one bottom row.
-- Exact raster border runs are `x=219…692` at `y=275` and `y=408`.
+- 默认控件和文案；
+- 上传显示 `图片1`；
+- `@` 原子节点插入；
+- 参数修改；
+- Dry-run 预览，不创建付费任务；
+- 清空重置；
+- 删除引用素材前确认；
+- 空任务面板隐藏；
+- 任务状态展示；
+- serializer 的顺序、缺失素材、重复 realIndex、非公开 URL；
+- store 的并发保护、stale response 保护、轮询和 token 保护。
 
-### Mobile `390 × 844`
+## 14. 已知后续增强
 
-- Ark does not collapse its full page to the viewport.
-- Composer begins at `x=280`; only its left portion is visible.
-- Right edge, price, and submit are off-screen; a horizontal scrollbar is visible.
-- Visible composer border runs are `x=295…380` at `y=319` and `y=452`.
-
-### Breakpoint
-
-No numeric breakpoint is derived from the three source captures. Implement and test the exact outcomes at `1440`, `768`, and `390` widths. When the clone is rendered without Ark's global chrome, keep the component internally usable; page-level Ark clipping belongs to the excluded shell.
-
-## Non-applicable Template Sections
-
-- Scroll-triggered style transition: N/A.
-- Time-driven animation: N/A.
-- Video, audio, canvas, Lottie, or layered-image composition: N/A.
-- Remote backend, authentication, gallery, and history behavior: N/A and outside the clone boundary.
+- 完整复刻点击 `@图片1` 后的图片预览 tooltip。
+- 进一步缩小 standalone 页面与源站外壳缺失造成的视觉差异。
+- 接入正式素材 CDN 后，补一次低成本真实生成验证。

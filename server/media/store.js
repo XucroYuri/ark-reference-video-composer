@@ -77,6 +77,8 @@ export function buildPublicMediaUrl(baseUrl, filename) {
 
 function decodeMultipartFilename(value) {
   if (typeof value !== 'string' || !value) return ''
+  // Multer/busboy 在部分运行时会把 multipart 文件名按 latin1 暴露。
+  // 这里只在 UTF-8 解码结果可靠时修正中文文件名，避免破坏正常 ASCII 名称。
   const decoded = Buffer.from(value, 'latin1').toString('utf8')
   return decoded && !decoded.includes('\uFFFD') ? decoded : value
 }
