@@ -31,8 +31,8 @@ The form moves one-for-one with the scroll container. It is not sticky, fixed, s
 - Clicking the parameter trigger opens the source parameter popover. It does not alter the current selections until an option is clicked.
 - Clicking the mode combobox opens a listbox with `参考生成`, `首尾帧`, and `版权IP生成`; `参考生成` is selected.
 - Clicking the active mention-menu item inserts one atomic `@图片1` node and closes the menu.
-- Clicking the inserted mention keeps the editor active and adds `aml-arco-popover-open` to its inner alignment wrapper; a source tooltip layer opens without text.
-- The `全部清空` control was inspected and hover-tested but not clicked, preserving the requested inserted-reference evidence. Its destructive result is not claimed as source evidence.
+- Clicking the inserted mention keeps the editor active and adds `aml-arco-popover-open` to its inner alignment wrapper. The source tooltip is a `242 × 242px` white image-preview panel with `1px solid #D0D0E1`, radius `8px`, and shadow `rgba(0,0,0,.05) 0 15px 35px -2px`; it has no button or delete affordance.
+- Clicking `全部清空` resets references and editor content together. It also removes the `@` trigger and clear-all button and returns submit to its disabled style.
 - The submit button was queried and hover-tested only. It received no click event.
 
 ### Hover
@@ -46,7 +46,10 @@ Hover was applied to the ready submit button, `@` trigger, parameter trigger, an
 3. The sole menu item had class `mentionListItem-jQvMWE active-Ae7A0B` immediately on open, establishing the keyboard-active state.
 4. Selecting it inserted one `contenteditable="false"`, draggable node labeled `@图片1`.
 5. The caret was placed after the node and ` 挥手` was inserted, producing exact editor text `让 @图片1 挥手`.
-6. A single `Backspace` with the caret immediately after the atomic node did not delete it; the node count remained `1`. Do not implement single-Backspace deletion as a confirmed source behavior.
+6. A single `Backspace` with only a caret immediately after the atomic node did not delete it; the node count remained `1`.
+7. Selecting the complete atomic DOM range changed its class to `react-renderer node-mediaTagSlot ProseMirror-selectednode` and produced a range selection containing `@图片1`.
+8. `Backspace` in that selected-node state removed the mention. The editor became `<p class="ark-sender-richTextArea-paragraph">让  挥手</p>`, mention count became `0`, and the selection collapsed to a caret at text offset `2`.
+9. Mention removal left the uploaded reference list item intact (`1`), kept the mention menu closed, kept `全部清空` visible, and left submit ready (`disabled=false`, `#5252FF`, opacity `1`, pointer cursor).
 
 OpenCLI `browser type` has replace-all semantics for contenteditable fields. The trailing fragment was therefore inserted with a focused browser `execCommand("insertText")`, which triggered the live ProseMirror editor and preserved the atomic node.
 
@@ -66,13 +69,71 @@ OpenCLI `browser type` has replace-all semantics for contenteditable fields. The
 | `@` menu open | `ark-video-composer-mention-menu.png`; body-level `react-renderer`, `160 × 103px`, `z-index:9999` |
 | `@` menu keyboard-active | First and only item carries `active-Ae7A0B` immediately after typing `@` |
 | Mention inserted | One `.node-mediaTagSlot`, `contenteditable=false`, `draggable=true`, label `@图片1` |
-| Mention focused | Editor stays active; inner wrapper receives `aml-arco-popover-open`; tooltip layer opens |
-| Mention deletion key | One Backspace immediately after the node is a no-op; complete removal sequence was not exercised |
+| Mention focused | Editor stays active; inner wrapper receives `aml-arco-popover-open`; `242 × 242px` image-preview tooltip opens with no delete control |
+| Mention deleted | Select atomic node → class adds `ProseMirror-selectednode` → Backspace; result text `让  挥手`, mention count `0`, reference count `1`, menu closed, submit still ready |
 | Parameter menu open | Popover lists all ratio, resolution, duration, quantity, and sound choices below |
 | Parameter selected | Trigger shows `智能比例`, `720P`, `5秒`, `1条`, `有声` |
 | Empty prompt | Guidance appears in the empty-state captures; disabled submit has `disabled=true`, opacity `0.5`, cursor `not-allowed` |
 | Valid prompt | With upload and `让 @图片1 挥手`, submit has `disabled=false`, opacity `1`, `#5252FF`, pointer cursor |
-| Clear-all available | Button appears after upload, text `全部清空`; source click result not exercised |
+| Clear-all | Click `全部清空`; result is empty editor/placeholder, `0` references, `0` images, `0` mentions, `0` `@` triggers, `0` clear-all buttons, empty file input, and disabled submit |
+
+## Complete mention-removal evidence
+
+Selected state:
+
+```text
+node class: react-renderer node-mediaTagSlot ProseMirror-selectednode
+selection type: Range
+selection text: @图片1
+anchor/focus: paragraph child offsets 1 → 2
+```
+
+After Backspace:
+
+```html
+<p class="ark-sender-richTextArea-paragraph">让  挥手</p>
+```
+
+```text
+mentionCount=0
+referenceListItems=1
+menuOpen=false
+clearButtons=1
+submit.disabled=false
+submit.background=#5252FF
+submit.opacity=1
+submit.cursor=pointer
+```
+
+## Clear-all reset evidence
+
+After clicking `.clear-all-button-rVxGU5`, the editor is the source empty document:
+
+```html
+<p class="ark-sender-richTextArea-paragraph is-empty is-editor-empty"
+   data-placeholder="使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。">
+  <br class="ProseMirror-trailingBreak">
+</p>
+```
+
+Exact reset state:
+
+```text
+editorText=""
+referenceListItems=0
+referenceLabels=0
+referenceImages=0
+mentionCount=0
+menuOpen=false
+plusTriggers=0
+mentionTriggers=0
+clearButtons=0
+fileInput.files=[]
+uploaderClass="wrapper-WWLMTm wrapper-empty-mwy5cP"
+uploaderText="参考内容"
+```
+
+The reset paragraph remains `15px/26px`, weight `400`, color `#0B0B0F`, transparent background, and text cursor. The uploader wrapper is `86 × 78px`, transparent, and uses the base `14px/21px` stack. Submit becomes `disabled=true`, background `#ACB4FF`, opacity `0.5`, radius `9999px`, and `cursor:not-allowed`.
 
 ## Parameter popover content
 
@@ -116,6 +177,8 @@ OpenCLI `browser type` has replace-all semantics for contenteditable fields. The
 | --- | --- | --- | --- | --- |
 | Empty default composer | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
 | Reference uploaded and valid editor content | `false` | `#5252FF` | `1` | `pointer` |
+| Mention deleted, reference retained | `false` | `#5252FF` | `1` | `pointer` |
+| After `全部清空` | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
 
 The source also enabled submit after the reference upload before a textual prompt was inserted. A clone should therefore derive readiness from Ark's accepted-input model rather than requiring non-empty plain text alone.
 

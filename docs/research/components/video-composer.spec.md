@@ -9,7 +9,7 @@
 - **Clone boundary:** `form.agentic-sender` only
 - **Interaction model:** pointer and keyboard state; normal flow in a native scroller
 - **Source framework evidence:** Arco control classes plus a Tiptap/ProseMirror contenteditable editor
-- **Builder status:** source-backed for visual implementation, upload, menu, atomic insertion, option overlays, and submit states
+- **Builder status:** source-backed for visual implementation, upload, menu, atomic insertion/removal, clear-all reset, option overlays, and submit states
 
 Resolved provenance: commits `f43c499` and `e300926` preserved an earlier in-app browser timeout. The authenticated OpenCLI session later supplied real DOM, CSSOM, screenshots, and interactions; the old blocking statements are superseded.
 
@@ -246,7 +246,18 @@ white-space: pre-wrap;
 - Exact document shape: plain text, one atomic non-editable draggable node, plain text.
 - The menu closes after selection.
 - Clicking the mention leaves the editor active and adds `aml-arco-popover-open` to its inner wrapper.
-- One Backspace immediately after the atomic node did not remove it.
+- The focused preview is a `242 × 242px` white panel with `1px solid #D0D0E1`, radius `8px`, shadow `rgba(0,0,0,.05) 0 15px 35px -2px`, and a `224 × 224px` contained image. It exposes no delete control.
+- One Backspace with only a caret immediately after the atomic node does not remove it.
+
+### Mention selected and deleted
+
+- Trigger selected state by selecting the complete atomic node; Ark adds `ProseMirror-selectednode` to `.node-mediaTagSlot`.
+- Selected class: `react-renderer node-mediaTagSlot ProseMirror-selectednode`.
+- Browser selection: `Range`, paragraph child offsets `1` through `2`, containing `@图片1`.
+- Backspace in this state deletes the mention completely.
+- Resulting editor HTML: `<p class="ark-sender-richTextArea-paragraph">让  挥手</p>`.
+- Resulting editor text: `让  挥手`; mention count `0`; menu closed.
+- The uploaded reference remains (`1` list item), clear-all remains visible, and submit remains ready with `disabled=false`, background `#5252FF`, opacity `1`, pointer cursor.
 
 ### Mode menu
 
@@ -270,9 +281,23 @@ No computed-property change was observed for the ready submit, mention trigger, 
 
 ### Clear-all
 
-- Source-visible state: available after upload with exact label `全部清空` and the style above.
-- Source click result: not exercised so the inserted-reference evidence remained intact.
-- Local clone behavior should clear local reference/editor state without calling Ark or a generation endpoint; this is the safe local product contract, not a claim about an unobserved Ark transition.
+- Trigger: click `.clear-all-button-rVxGU5` after a reference has been uploaded.
+- Editor resets to empty text with one paragraph carrying `is-empty is-editor-empty`, the usage guidance in `data-placeholder`, and a `ProseMirror-trailingBreak`.
+- Reference list items, `图片1` labels, reference images, atomic mentions, plus triggers, standalone `@` triggers, and clear-all buttons all become `0`.
+- The file input's `files` list becomes empty.
+- Uploader class becomes `wrapper-WWLMTm wrapper-empty-mwy5cP`; it is `86 × 78px`, transparent, and displays `参考内容`.
+- Empty paragraph remains `400 15px/26px`, `#0B0B0F`, transparent, with text cursor.
+- Submit changes to `disabled=true`, background `#ACB4FF`, opacity `0.5`, radius `9999px`, and `cursor:not-allowed`.
+- Mention menu remains closed; no task/result node appears.
+
+Exact reset editor DOM:
+
+```html
+<p class="ark-sender-richTextArea-paragraph is-empty is-editor-empty"
+   data-placeholder="使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。">
+  <br class="ProseMirror-trailingBreak">
+</p>
+```
 
 ### Submit
 
@@ -331,6 +356,29 @@ No computed-property change was observed for the ready submit, mention trigger, 
 
 ```text
 让 @图片1 挥手
+```
+
+### Mention deleted, reference retained
+
+```text
+让  挥手
+图片1
+全部清空
+0.046 元/千 tokens
+```
+
+### Clear-all reset
+
+```text
+参考内容
+使用@可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。
+参考生成
+智能比例
+720P
+5秒
+1条
+有声
+0.046 元/千 tokens
 ```
 
 ## Assets
