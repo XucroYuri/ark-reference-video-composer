@@ -354,6 +354,8 @@ describe('PromptComposer', () => {
     realIndex: 1,
     previewUrl: '/uploads/m1.png',
   }
+  const bodyListbox = () => document.body.querySelector('[role="listbox"]')
+  const bodyOption = () => document.body.querySelector('[role="option"]')
 
   it('applies external JSON changes without feeding them back as updates', async () => {
     const initial = {
@@ -401,6 +403,7 @@ describe('PromptComposer', () => {
         kind: 'image',
         sourceLabel: '图片1',
         realIndex: 1,
+        previewUrl: '/uploads/m1.png',
       },
     })
     expect(wrapper.vm.insertMedia({ ...readyImage, id: 'unknown' })).toBe(false)
@@ -446,8 +449,8 @@ describe('PromptComposer', () => {
     await Promise.resolve()
     await nextTick()
 
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
-    expect(wrapper.find('[role="option"]').text()).toContain('图片1')
+    expect(bodyListbox()).not.toBeNull()
+    expect(bodyOption().textContent).toContain('图片1')
     editor.view.dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     await nextTick()
 
@@ -456,7 +459,7 @@ describe('PromptComposer', () => {
       type: 'mediaMention',
       attrs: { mediaId: 'm1', sourceLabel: '图片1', realIndex: 1 },
     })
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    expect(bodyListbox()).toBeNull()
     wrapper.unmount()
   })
 
@@ -478,7 +481,7 @@ describe('PromptComposer', () => {
 
     await wrapper.setProps({ disabled: true })
     await nextTick()
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    expect(bodyListbox()).toBeNull()
 
     menu.vm.$emit('select', staleItem)
     await nextTick()
@@ -499,12 +502,12 @@ describe('PromptComposer', () => {
     editor.commands.insertContent('@')
     await Promise.resolve()
     await nextTick()
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
+    expect(bodyListbox()).not.toBeNull()
 
     const updatesBeforeDisabling = wrapper.emitted('update:modelValue')?.length ?? 0
     await wrapper.setProps({ disabled: true })
     await nextTick()
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    expect(bodyListbox()).toBeNull()
 
     await wrapper.setProps({ disabled: false })
     await nextTick()
@@ -543,7 +546,13 @@ describe('PromptComposer', () => {
       { type: 'text', text: ' 和 ' },
       {
         type: 'mediaMention',
-        attrs: { mediaId: 'm1', kind: 'image', sourceLabel: '图片1', realIndex: 1 },
+        attrs: {
+          mediaId: 'm1',
+          kind: 'image',
+          sourceLabel: '图片1',
+          realIndex: 1,
+          previewUrl: null,
+        },
       },
     ])
     expect(wrapper.find('.ProseMirror').element.textContent).toBe(' 和 @图片1')
@@ -616,7 +625,13 @@ describe('PromptComposer', () => {
       { type: 'text', text: ' 和 ' },
       {
         type: 'mediaMention',
-        attrs: { mediaId: 'm2', kind: 'image', sourceLabel: '图片2', realIndex: 2 },
+        attrs: {
+          mediaId: 'm2',
+          kind: 'image',
+          sourceLabel: '图片2',
+          realIndex: 2,
+          previewUrl: null,
+        },
       },
     ])
     expect(wrapper.find('.ProseMirror').element.textContent).toBe(' 和 @图片2')
@@ -664,7 +679,7 @@ describe('PromptComposer', () => {
     editor.commands.insertContent('@')
     await Promise.resolve()
     await nextTick()
-    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
+    expect(bodyListbox()).not.toBeNull()
 
     wrapper.unmount()
     expect(destroy).toHaveBeenCalledTimes(1)

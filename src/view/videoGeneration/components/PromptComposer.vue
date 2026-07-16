@@ -1,13 +1,15 @@
 <template>
   <div ref="rootElement" class="prompt-composer">
     <editor-content :editor="editor" />
-    <media-suggestion-menu
-      v-if="suggestionState.open"
-      :items="suggestionState.items"
-      :selected-index="suggestionState.selectedIndex"
-      :style="menuStyle"
-      @select="selectSuggestion"
-    />
+    <Teleport to="body">
+      <media-suggestion-menu
+        v-if="suggestionState.open"
+        :items="suggestionState.items"
+        :selected-index="suggestionState.selectedIndex"
+        :style="menuStyle"
+        @select="selectSuggestion"
+      />
+    </Teleport>
   </div>
 </template>
 
@@ -113,8 +115,10 @@ const menuStyle = computed(() => {
   const rootRect = rootElement.value?.getBoundingClientRect?.()
   if (!anchor || !rootRect) return { left: '0px', top: '32px' }
   return {
-    left: `${Math.max(0, anchor.left - rootRect.left)}px`,
-    top: `${Math.max(0, anchor.bottom - rootRect.top + 6)}px`,
+    position: 'absolute',
+    zIndex: 9999,
+    left: `${Math.max(0, anchor.left)}px`,
+    top: `${Math.max(0, anchor.bottom + 6)}px`,
   }
 })
 
@@ -169,13 +173,14 @@ function insertMedia(media) {
 
   return editor.commands.insertContent({
     type: 'mediaMention',
-    attrs: {
-      mediaId: item.mediaId,
-      kind: item.kind,
-      sourceLabel: item.sourceLabel,
-      realIndex: item.realIndex,
-    },
-  })
+      attrs: {
+        mediaId: item.mediaId,
+        kind: item.kind,
+        sourceLabel: item.sourceLabel,
+        realIndex: item.realIndex,
+        previewUrl: item.previewUrl,
+      },
+    })
 }
 
 function clear() {

@@ -204,6 +204,7 @@ export function createMediaSuggestion({
                 kind: currentItem.kind,
                 sourceLabel: currentItem.sourceLabel,
                 realIndex: currentItem.realIndex,
+                previewUrl: currentItem.previewUrl,
               },
             })
             .run()

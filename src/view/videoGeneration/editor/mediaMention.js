@@ -139,6 +139,7 @@ export const MediaMention = Node.create({
       kind: { default: null, rendered: false },
       sourceLabel: { default: null, rendered: false },
       realIndex: { default: null, rendered: false },
+      previewUrl: { default: null, rendered: false },
     }
   },
 
@@ -157,6 +158,7 @@ export const MediaMention = Node.create({
       realIndex: node.attrs.realIndex,
     }
     const label = isValidMediaMentionAttrs(attrs) ? attrs.sourceLabel : ''
+    const previewUrl = typeof node.attrs.previewUrl === 'string' ? node.attrs.previewUrl : ''
 
     return [
       'span',
@@ -168,7 +170,14 @@ export const MediaMention = Node.create({
         'data-real-index': Number.isInteger(attrs.realIndex) ? String(attrs.realIndex) : '',
         class: 'media-mention',
       }),
-      `@${label}`,
+      [
+        'span',
+        { class: 'media-mention-pill' },
+        previewUrl
+          ? ['img', { class: 'media-mention-thumbnail', src: previewUrl, alt: '' }]
+          : ['span', { class: 'media-mention-thumbnail is-empty' }],
+        ['span', { class: 'media-mention-label' }, `@${label}`],
+      ],
     ]
   },
 

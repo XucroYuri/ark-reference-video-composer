@@ -7,6 +7,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import VideoGeneration from '../index.vue'
+import GenerationTaskPanel from '../components/GenerationTaskPanel.vue'
 import { useVideoGenerationStore } from '../store'
 import * as videoGenerationApi from '@/api/videoGeneration'
 
@@ -237,6 +238,40 @@ describe('VideoGeneration composer', () => {
     await flush()
     expect(videoGenerationApi.deleteReference).toHaveBeenCalledWith({ mediaId: 'media-1' })
     expect(useVideoGenerationStore().mediaList).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('renders idle, submitting, queued, running, succeeded, failed, and cancelled task states', () => {
+    const idle = mount(GenerationTaskPanel, {
+      props: { taskList: [] },
+    })
+    expect(idle.text()).toContain('idle')
+    idle.unmount()
+
+    const submitting = mount(GenerationTaskPanel, {
+      props: { taskList: [], submitting: true },
+    })
+    expect(submitting.text()).toContain('submitting')
+    submitting.unmount()
+
+    const wrapper = mount(GenerationTaskPanel, {
+      props: {
+        taskList: [
+          { id: 'task-queued', status: 'queued' },
+          { id: 'task-running', status: 'running' },
+          { id: 'task-succeeded', status: 'succeeded', content: { video_url: 'https://example.com/video.mp4' } },
+          { id: 'task-failed', status: 'failed', message: '失败原因' },
+          { id: 'task-cancelled', status: 'cancelled' },
+        ],
+      },
+    })
+
+    expect(wrapper.text()).toContain('queued')
+    expect(wrapper.text()).toContain('running')
+    expect(wrapper.text()).toContain('succeeded')
+    expect(wrapper.text()).toContain('failed')
+    expect(wrapper.text()).toContain('cancelled')
+    expect(wrapper.find('video').attributes('autoplay')).toBeUndefined()
     wrapper.unmount()
   })
 })

@@ -1,15 +1,14 @@
 <template>
   <section class="generation-task-panel" aria-label="生成任务">
-    <p v-if="!taskList.length" class="generation-task-empty">idle</p>
     <article
-      v-for="task in taskList"
+      v-for="task in visibleTasks"
       :key="task.id"
       class="generation-task"
       :class="`is-${task.status}`"
     >
       <div>
         <strong>{{ task.id }}</strong>
-        <span>{{ task.status }}</span>
+        <span>{{ statusLabels[task.status] || task.status }}</span>
       </div>
       <video
         v-if="task.status === 'succeeded' && task.content?.video_url"
@@ -24,7 +23,26 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   taskList: { type: Array, default: () => [] },
+  submitting: { type: Boolean, default: false },
+})
+
+const statusLabels = {
+  idle: 'idle',
+  submitting: 'submitting',
+  queued: 'queued',
+  running: 'running',
+  succeeded: 'succeeded',
+  failed: 'failed',
+  cancelled: 'cancelled',
+}
+
+const visibleTasks = computed(() => {
+  if (props.submitting) return [{ id: 'local-submitting', status: 'submitting' }]
+  if (props.taskList.length) return props.taskList
+  return [{ id: 'idle', status: 'idle' }]
 })
 </script>

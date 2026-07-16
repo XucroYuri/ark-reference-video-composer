@@ -65,7 +65,7 @@
       </div>
     </form>
 
-    <GenerationTaskPanel :task-list="store.taskList" />
+    <GenerationTaskPanel :task-list="store.taskList" :submitting="store.submitPending" />
     <RequestPreviewDrawer
       v-model="previewOpen"
       :result="store.dryRunResult"

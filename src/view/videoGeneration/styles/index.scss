@@ -220,6 +220,48 @@
   line-height: 26px;
 }
 
+.ark-composer-prompt .prompt-composer .media-mention {
+  display: inline-block;
+  min-width: 84px;
+  height: 26px;
+  padding-right: 3px;
+  margin-left: 3px;
+  vertical-align: top;
+}
+
+.ark-composer-prompt .prompt-composer .media-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 120px;
+  height: 22px;
+  gap: 4px;
+  margin: 0 4px;
+  color: #6c7191;
+  line-height: 22px;
+  white-space: nowrap;
+  vertical-align: middle;
+  border-radius: 4px;
+  cursor: grab;
+}
+
+.ark-composer-prompt .prompt-composer .media-mention-thumbnail {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  object-fit: cover;
+  background: #f0f2fa;
+  border-radius: 4px;
+}
+
+.ark-composer-prompt .prompt-composer .media-mention-label {
+  overflow: hidden;
+  color: #6c7191;
+  font-size: 15px;
+  line-height: 22px;
+  letter-spacing: 0.045px;
+  text-overflow: ellipsis;
+}
+
 .ark-composer-actions-row {
   display: flex;
   justify-content: space-between;
@@ -380,7 +422,7 @@
 }
 
 .generation-task-empty {
-  display: none;
+  color: #a5a8b8;
 }
 
 .generation-task {
