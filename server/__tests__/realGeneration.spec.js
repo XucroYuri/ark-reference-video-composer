@@ -120,6 +120,34 @@ describe('real generation confirmation', () => {
 })
 
 describe('Ark client', () => {
+  it('rejects every Ark base except the exact approved HTTPS API boundary', () => {
+    const fetchImpl = vi.fn()
+    const invalidBases = [
+      'http://ark.cn-beijing.volces.com/api/v3',
+      'https://localhost/api/v3',
+      'https://evil.example/api/v3',
+      'https://ark.cn-beijing.volces.com:444/api/v3',
+      'https://user:pass@ark.cn-beijing.volces.com/api/v3',
+      'https://ark.cn-beijing.volces.com/api/v3?next=evil',
+      'https://ark.cn-beijing.volces.com/api/v3#fragment',
+      'https://ark.cn-beijing.volces.com/api/v3/contents',
+      'https://ark.cn-beijing.volces.com//api/v3',
+      ' https://ark.cn-beijing.volces.com/api/v3',
+    ]
+
+    for (const baseUrl of invalidBases) {
+      expect(() => createArkClient({
+        baseUrl,
+        apiKey: 'secret-test-key',
+        fetchImpl,
+      })).toThrow(expect.objectContaining({
+        status: 500,
+        code: 'INVALID_ARK_BASE_URL',
+      }))
+    }
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('creates one task with the fixed Ark API path and server authorization', async () => {
     const payload = { model: 'doubao-seedance-2-0-260128', content: [] }
     const fetchImpl = vi.fn().mockResolvedValue(new Response(
@@ -290,6 +318,39 @@ describe('Ark client', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it('cancels unread response bodies for oversized headers and non-JSON content', async () => {
+    const oversizedCancel = vi.fn()
+    const nonJsonCancel = vi.fn()
+    const responseWithBody = (cancel, headers) => new Response(new ReadableStream({
+      pull() {},
+      cancel,
+    }), { status: 502, headers })
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(responseWithBody(oversizedCancel, {
+        'content-type': 'application/json',
+        'content-length': '1024',
+      }))
+      .mockResolvedValueOnce(responseWithBody(nonJsonCancel, {
+        'content-type': 'text/html',
+      }))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+      maxResponseBytes: 64,
+    })
+
+    await expect(client.getTask('task-1')).rejects.toMatchObject({
+      code: 'ARK_RESPONSE_TOO_LARGE',
+    })
+    await expect(client.getTask('task-1')).rejects.toMatchObject({
+      code: 'ARK_INVALID_RESPONSE',
+    })
+    expect(oversizedCancel).toHaveBeenCalledTimes(1)
+    expect(nonJsonCancel).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
   it('aborts a stalled Ark request at the bounded timeout', async () => {
     vi.useFakeTimers()
     try {
@@ -388,6 +449,77 @@ describe('Ark client', () => {
     expect(exposed).not.toContain('secret-test-key')
     expect(exposed).not.toContain('another-sensitive-token')
     expect(exposed).toContain('[REDACTED]')
+  })
+
+  it('recursively sanitizes successful create, get, and delete responses', async () => {
+    const signedUrl = 'https://cdn.example.test/video.mp4?X-Signature=keep-me&Expires=999'
+    const success = (extra) => new Response(JSON.stringify({
+      ...extra,
+      status: 'running',
+      output_url: signedUrl,
+      authorization: 'Bearer response-private-token',
+      nested: {
+        apiKey: 'secret-test-key',
+        api_key: 'another-private-value',
+        secret: 'private-secret-value',
+        note: 'echo secret-test-key and Bearer nested-private-token',
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(success({ id: 'task-1' }))
+      .mockResolvedValueOnce(success({ id: 'task-1' }))
+      .mockResolvedValueOnce(success({ id: 'task-1', deleted: true }))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+
+    const results = [
+      await client.createTask({ content: [] }),
+      await client.getTask('task-1'),
+      await client.deleteTask('task-1'),
+    ]
+
+    for (const result of results) {
+      expect(result).toMatchObject({
+        id: 'task-1',
+        status: 'running',
+        output_url: signedUrl,
+        authorization: '[REDACTED]',
+        nested: {
+          apiKey: '[REDACTED]',
+          api_key: '[REDACTED]',
+          secret: '[REDACTED]',
+          note: 'echo [REDACTED] and Bearer [REDACTED]',
+        },
+      })
+      expect(JSON.stringify(result)).not.toContain('secret-test-key')
+      expect(JSON.stringify(result)).not.toContain('nested-private-token')
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('rejects an invalid task ID returned by Ark create', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ id: '../unsafe-task' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+
+    await expect(client.createTask({ content: [] })).rejects.toMatchObject({
+      status: 502,
+      code: 'ARK_INVALID_RESPONSE',
+      message: 'Ark 创建任务响应中的任务 ID 无效',
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -856,6 +988,38 @@ describe('guarded real-generation routes', () => {
         code: 40008,
         data: { reason: 'INVALID_TASK_ID' },
         msg: '任务 ID 格式无效',
+      })
+      expect(context.arkClient.getTask).not.toHaveBeenCalled()
+      expect(context.arkClient.deleteTask).not.toHaveBeenCalled()
+    } finally {
+      await context.close()
+    }
+  })
+
+  it.each([
+    [{ realGenerationEnabled: false }, 'REAL_GENERATION_DISABLED'],
+    [{ arkApiKey: '   ' }, 'ARK_API_KEY_MISSING'],
+  ])('guards get and delete routes when runtime is not ready: %s', async (config, blockerCode) => {
+    const context = await startApp({ config })
+    try {
+      const getResponse = await fetch(
+        `${context.baseUrl}/api/videoGeneration/getTask?taskId=task-1`,
+      )
+      const deleteResult = await postJson(context.baseUrl, 'deleteTask', {
+        taskId: 'task-1',
+      })
+
+      expect(getResponse.status).toBe(403)
+      expect(await getResponse.json()).toMatchObject({
+        code: 40301,
+        data: { blockers: [{ code: blockerCode }] },
+        msg: '真实生成条件不满足',
+      })
+      expect(deleteResult.response.status).toBe(403)
+      expect(deleteResult.json).toMatchObject({
+        code: 40301,
+        data: { blockers: [{ code: blockerCode }] },
+        msg: '真实生成条件不满足',
       })
       expect(context.arkClient.getTask).not.toHaveBeenCalled()
       expect(context.arkClient.deleteTask).not.toHaveBeenCalled()

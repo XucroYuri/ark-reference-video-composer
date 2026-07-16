@@ -57,6 +57,27 @@ function normalizeArkError(error, apiKey) {
   }
 }
 
+function getRuntimeBlockers(config) {
+  const blockers = []
+  if (!config?.realGenerationEnabled) {
+    blockers.push({
+      code: 'REAL_GENERATION_DISABLED',
+      message: '真实生成未启用',
+    })
+  }
+  if (typeof config?.arkApiKey !== 'string' || !config.arkApiKey.trim()) {
+    blockers.push({
+      code: 'ARK_API_KEY_MISSING',
+      message: '服务端未配置 ARK_API_KEY',
+    })
+  }
+  return blockers
+}
+
+function failRuntimeGate(res, blockers) {
+  return fail(res, 40301, '真实生成条件不满足', { blockers }, 403)
+}
+
 function validateGenerationConfig(value) {
   const errors = []
   const add = (path, message) => errors.push({ path, message })
@@ -203,13 +224,21 @@ async function prepareSubmission(body, config, mediaStore) {
     config: validatedConfig.config,
     model: config.arkModel,
   })
+  const submissionBlockers = validateRealSubmission({
+    serialization,
+    runtime: {
+      ...config,
+      realGenerationEnabled: true,
+      arkApiKey: 'runtime-gate-validated',
+    },
+  })
   return {
     config: validatedConfig.config,
     doc: validatedDoc.doc,
     mediaList: authoritative.mediaList,
     serialization,
     request,
-    blockers: validateRealSubmission({ serialization, runtime: config }),
+    blockers: [...getRuntimeBlockers(config), ...submissionBlockers],
     confirmationHash: createConfirmationHash(request, validatedConfig.config.count),
   }
 }
@@ -338,6 +367,8 @@ export function createVideoGenerationRouter({
 
   router.get('/getTask', async (req, res) => {
     try {
+      const runtimeBlockers = getRuntimeBlockers(config)
+      if (runtimeBlockers.length > 0) return failRuntimeGate(res, runtimeBlockers)
       const taskId = req.query.taskId
       if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
         return fail(res, 40008, '任务 ID 格式无效', { reason: 'INVALID_TASK_ID' })
@@ -353,6 +384,8 @@ export function createVideoGenerationRouter({
 
   router.post('/deleteTask', async (req, res) => {
     try {
+      const runtimeBlockers = getRuntimeBlockers(config)
+      if (runtimeBlockers.length > 0) return failRuntimeGate(res, runtimeBlockers)
       const taskId = req.body?.taskId
       if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
         return fail(res, 40008, '任务 ID 格式无效', { reason: 'INVALID_TASK_ID' })

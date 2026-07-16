@@ -1,4 +1,5 @@
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
+const APPROVED_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 
 export class ArkClientError extends Error {
   constructor({ status, code, message, requestId = '' }) {
@@ -20,10 +21,19 @@ function assertTaskId(id) {
   }
 }
 
+async function cancelResponseBody(response) {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Preserve the original response validation error.
+  }
+}
+
 async function readJsonBody(response, maxResponseBytes) {
   const requestId = response.headers.get('x-request-id') || ''
   const contentLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+    await cancelResponseBody(response)
     throw new ArkClientError({
       status: 502,
       code: 'ARK_RESPONSE_TOO_LARGE',
@@ -79,13 +89,36 @@ export function createArkClient({
   maxResponseBytes = 1024 * 1024,
   timeoutMs = 15_000,
 }) {
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  if (baseUrl !== APPROVED_BASE_URL && baseUrl !== `${APPROVED_BASE_URL}/`) {
+    throw new ArkClientError({
+      status: 500,
+      code: 'INVALID_ARK_BASE_URL',
+      message: 'Ark 服务地址不在允许范围内',
+    })
+  }
+  const normalizedBaseUrl = APPROVED_BASE_URL
   const normalizedApiKey = String(apiKey ?? '').trim()
-  const redactSensitive = (value) => {
+  const redactSensitive = (value, maxLength = 500) => {
     let redacted = String(value ?? '')
       .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
     if (normalizedApiKey) redacted = redacted.split(normalizedApiKey).join('[REDACTED]')
-    return redacted.slice(0, 500)
+    return redacted.slice(0, maxLength)
+  }
+  const isSensitiveKey = (key) => {
+    const normalized = key.toLowerCase().replace(/[_\s-]/g, '')
+    return normalized === 'authorization'
+      || normalized.includes('apikey')
+      || normalized.endsWith('secret')
+      || normalized.includes('accesskey')
+  }
+  const sanitizeResponse = (value) => {
+    if (typeof value === 'string') return redactSensitive(value, Infinity)
+    if (Array.isArray(value)) return value.map(sanitizeResponse)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      key,
+      isSensitiveKey(key) ? '[REDACTED]' : sanitizeResponse(child),
+    ]))
   }
 
   const request = async (path, { method, body }) => {
@@ -102,6 +135,7 @@ export function createArkClient({
             ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          redirect: 'error',
           signal: controller.signal,
         })
       } catch {
@@ -123,6 +157,7 @@ export function createArkClient({
         response.status !== 204
         && !/^application\/(?:[\w.+-]*\+)?json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')
       ) {
+        await cancelResponseBody(response)
         throw new ArkClientError({
           status: response.status,
           code: 'ARK_INVALID_RESPONSE',
@@ -154,18 +189,27 @@ export function createArkClient({
           ),
         })
       }
-      return parsed
+      return sanitizeResponse(parsed)
     } finally {
       clearTimeout(timeout)
     }
   }
 
   return {
-    createTask(payload) {
-      return request('/contents/generations/tasks', {
+    async createTask(payload) {
+      const task = await request('/contents/generations/tasks', {
         method: 'POST',
         body: payload,
       })
+      const taskId = task?.id ?? task?.task_id
+      if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
+        throw new ArkClientError({
+          status: 502,
+          code: 'ARK_INVALID_RESPONSE',
+          message: 'Ark 创建任务响应中的任务 ID 无效',
+        })
+      }
+      return task
     },
     async getTask(id) {
       assertTaskId(id)
