@@ -13,6 +13,16 @@ vi.mock('@/api/videoGeneration', () => ({
   deleteVideoGenerationTask: vi.fn(),
 }))
 
+function createDeferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, reject, resolve }
+}
+
 describe('removeMentionsByMediaId', () => {
   it('recursively removes only matching atomic mentions without mutating the source', () => {
     const source = {
@@ -176,10 +186,39 @@ describe('useVideoGenerationStore', () => {
     expect(store.dryRunResult).toBeNull()
 
     resetDryRun()
-    store.setConfig({ duration: 10, injected: 'discard-me' })
+    store.setConfig({ duration: 10 })
     expect(store.dryRunResult).toBeNull()
     expect(store.config.duration).toBe(10)
-    expect(store.config).not.toHaveProperty('injected')
+  })
+
+  it.each([
+    null,
+    { injected: 'discard-me' },
+    { mode: 'text_to_video' },
+    { ratio: '4:3' },
+    { resolution: '4k' },
+    { duration: 6 },
+    { count: 0 },
+    { count: 1.5 },
+    { generateAudio: 'true' },
+  ])('rejects an invalid config patch atomically without consuming confirmation', (patch) => {
+    const store = useVideoGenerationStore()
+    store.dryRunResult = { confirmationToken: 'still-current' }
+    const before = { ...store.config }
+    let error
+
+    try {
+      store.setConfig(patch)
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toMatchObject({
+      name: 'VideoGenerationStoreError',
+      code: 'VIDEO_GENERATION_INVALID_CONFIG',
+    })
+    expect(store.config).toEqual(before)
+    expect(store.dryRunResult).toEqual({ confirmationToken: 'still-current' })
   })
 
   it('invalidates confirmation when exposed reactive draft state changes directly', () => {
@@ -224,6 +263,78 @@ describe('useVideoGenerationStore', () => {
     expect(store.uploadPending).toBe(false)
   })
 
+  it('does not resurrect a cleared upload or let its finally clear a newer upload', async () => {
+    const store = useVideoGenerationStore()
+    const oldUpload = createDeferred()
+    const newUpload = createDeferred()
+    videoGenerationApi.uploadReference
+      .mockReturnValueOnce(oldUpload.promise)
+      .mockReturnValueOnce(newUpload.promise)
+
+    const oldRequest = store.uploadMedia(new File(['old'], 'old.png'))
+    await expect(store.uploadMedia(new File(['overlap'], 'overlap.png'))).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_REQUEST_PENDING',
+    })
+
+    store.clearDraft()
+    const newRequest = store.uploadMedia(new File(['new'], 'new.png'))
+    oldUpload.resolve({
+      code: 0,
+      data: { id: 'old-server-media', kind: 'image', name: 'old.png' },
+      msg: 'ok',
+    })
+    await expect(oldRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+
+    expect(store.mediaList).toEqual([])
+    expect(store.uploadPending).toBe(true)
+
+    newUpload.resolve({
+      code: 0,
+      data: { id: 'new-server-media', kind: 'image', name: 'new.png' },
+      msg: 'ok',
+    })
+    await expect(newRequest).resolves.toMatchObject({
+      id: 'new-server-media',
+      realIndex: 1,
+    })
+    expect(store.uploadPending).toBe(false)
+  })
+
+  it('rejects upload and removal while the other media operation is active', async () => {
+    const store = useVideoGenerationStore()
+    store.addMedia({ id: 'existing-media', kind: 'image' })
+    const upload = createDeferred()
+    videoGenerationApi.uploadReference.mockReturnValue(upload.promise)
+
+    const uploadRequest = store.uploadMedia(new File(['new'], 'new.png'))
+    await expect(store.removeMedia('existing-media')).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_REQUEST_PENDING',
+    })
+    expect(videoGenerationApi.deleteReference).not.toHaveBeenCalled()
+    upload.resolve({
+      code: 0,
+      data: { id: 'uploaded-media', kind: 'image' },
+      msg: 'ok',
+    })
+    await uploadRequest
+
+    const removal = createDeferred()
+    videoGenerationApi.deleteReference.mockReturnValue(removal.promise)
+    const removalRequest = store.removeMedia('existing-media')
+    await expect(store.uploadMedia(new File(['blocked'], 'blocked.png'))).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_REQUEST_PENDING',
+    })
+    expect(videoGenerationApi.uploadReference).toHaveBeenCalledTimes(1)
+    removal.resolve({
+      code: 0,
+      data: { mediaId: 'existing-media', removed: true },
+      msg: 'ok',
+    })
+    await removalRequest
+  })
+
   it('deduplicates uploaded server IDs without consuming another realIndex', async () => {
     const store = useVideoGenerationStore()
     store.addMedia({ id: 'server-media-1', kind: 'image', name: 'first.png' })
@@ -266,6 +377,50 @@ describe('useVideoGenerationStore', () => {
     })
     expect(store.uploadPending).toBe(false)
     expect(store.mediaList).toEqual([])
+  })
+
+  it.each([
+    ['rejected', (envelope) => videoGenerationApi.uploadReference.mockRejectedValue({
+      response: { data: envelope },
+    })],
+    ['fulfilled', (envelope) => videoGenerationApi.uploadReference.mockResolvedValue({
+      response: { data: envelope },
+    })],
+  ])('normalizes %s Axios-shaped server envelopes', async (_shape, arrange) => {
+    const store = useVideoGenerationStore()
+    arrange({ code: 40003, data: { reason: 'MEDIA_SIGNATURE_MISMATCH' }, msg: '上传失败' })
+
+    await expect(store.uploadMedia(new File(['x'], 'bad.png'))).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+      details: {
+        responseCode: 40003,
+        data: { reason: 'MEDIA_SIGNATURE_MISMATCH' },
+      },
+    })
+    expect(store.uploadPending).toBe(false)
+  })
+
+  it('maps a true network rejection to a stable safe error', async () => {
+    const store = useVideoGenerationStore()
+    videoGenerationApi.uploadReference.mockRejectedValue(
+      new Error('sensitive network internals must not escape'),
+    )
+
+    let error
+    try {
+      await store.uploadMedia(new File(['x'], 'network.png'))
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toMatchObject({
+      name: 'VideoGenerationStoreError',
+      code: 'VIDEO_GENERATION_NETWORK_ERROR',
+      message: '视频生成网络请求失败',
+      details: {},
+    })
+    expect(JSON.stringify(error)).not.toContain('sensitive network internals')
+    expect(store.uploadPending).toBe(false)
   })
 
   it('removes media and matching mentions only after server deletion succeeds', async () => {
@@ -338,6 +493,46 @@ describe('useVideoGenerationStore', () => {
     expect(store.removePending).toBe(false)
   })
 
+  it('re-finds removal by ID and isolates old/new removal pending state across clear', async () => {
+    const store = useVideoGenerationStore()
+    store.addMedia({ id: 'old-m1', kind: 'image' })
+    const oldRemoval = createDeferred()
+    const newRemoval = createDeferred()
+    videoGenerationApi.deleteReference
+      .mockReturnValueOnce(oldRemoval.promise)
+      .mockReturnValueOnce(newRemoval.promise)
+
+    const oldRequest = store.removeMedia('old-m1')
+    await expect(store.removeMedia('old-m1')).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_REQUEST_PENDING',
+    })
+
+    store.clearDraft()
+    store.addMedia({ id: 'replacement-m1', kind: 'image' })
+    store.addMedia({ id: 'new-m2', kind: 'image' })
+    const newRequest = store.removeMedia('new-m2')
+
+    oldRemoval.resolve({
+      code: 0,
+      data: { mediaId: 'old-m1', removed: true },
+      msg: 'ok',
+    })
+    await expect(oldRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.mediaList.map((item) => item.id)).toEqual(['replacement-m1', 'new-m2'])
+    expect(store.removePending).toBe(true)
+
+    newRemoval.resolve({
+      code: 0,
+      data: { mediaId: 'new-m2', removed: true },
+      msg: 'ok',
+    })
+    await expect(newRequest).resolves.toMatchObject({ id: 'new-m2' })
+    expect(store.mediaList.map((item) => item.id)).toEqual(['replacement-m1'])
+    expect(store.removePending).toBe(false)
+  })
+
   it('dry-runs the canonical draft with only authoritative media identity fields', async () => {
     const store = useVideoGenerationStore()
     store.addMedia({
@@ -387,6 +582,68 @@ describe('useVideoGenerationStore', () => {
 
     await expect(request).resolves.toEqual(result)
     expect(store.dryRunResult).toEqual(result)
+    expect(store.submitPending).toBe(false)
+  })
+
+  it('deep-snapshots dry-run DTO and discards a response after nested draft mutation', async () => {
+    const store = useVideoGenerationStore()
+    store.setEditorDoc({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '原提示' }] }],
+    })
+    const response = createDeferred()
+    videoGenerationApi.dryRunVideoGeneration.mockReturnValue(response.promise)
+
+    const request = store.runDryRun()
+    store.editorDoc.content[0].content.push({ type: 'text', text: '后改内容' })
+
+    expect(videoGenerationApi.dryRunVideoGeneration.mock.calls[0][0].doc).toEqual({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '原提示' }] }],
+    })
+    response.resolve({
+      code: 0,
+      data: { realReady: true, confirmationToken: 'stale-token' },
+      msg: 'ok',
+    })
+
+    await expect(request).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.dryRunResult).toBeNull()
+    expect(store.submitPending).toBe(false)
+  })
+
+  it('prevents an old dry-run response and finally from winning after clear', async () => {
+    const store = useVideoGenerationStore()
+    const oldDryRun = createDeferred()
+    const newDryRun = createDeferred()
+    videoGenerationApi.dryRunVideoGeneration
+      .mockReturnValueOnce(oldDryRun.promise)
+      .mockReturnValueOnce(newDryRun.promise)
+
+    const oldRequest = store.runDryRun()
+    store.clearDraft()
+    const newRequest = store.runDryRun()
+
+    oldDryRun.resolve({
+      code: 0,
+      data: { realReady: true, confirmationToken: 'old-token' },
+      msg: 'ok',
+    })
+    await expect(oldRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.dryRunResult).toBeNull()
+    expect(store.submitPending).toBe(true)
+
+    newDryRun.resolve({
+      code: 0,
+      data: { realReady: true, confirmationToken: 'new-token' },
+      msg: 'ok',
+    })
+    await newRequest
+    expect(store.dryRunResult.confirmationToken).toBe('new-token')
     expect(store.submitPending).toBe(false)
   })
 
@@ -488,6 +745,73 @@ describe('useVideoGenerationStore', () => {
     expect(store.submitPending).toBe(false)
   })
 
+  it('retains partial paid task IDs from an Axios-rejected server envelope', async () => {
+    const store = useVideoGenerationStore()
+    store.dryRunResult = { confirmationToken: 'single-use-token', realReady: true }
+    videoGenerationApi.createVideoGenerationTask.mockRejectedValue({
+      response: {
+        data: {
+          code: 50201,
+          data: { taskIds: ['paid-created-before-failure'] },
+          msg: 'Ark 创建任务失败',
+        },
+      },
+    })
+
+    await expect(store.confirmRealGeneration('single-use-token')).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+
+    expect(videoGenerationApi.createVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.taskList).toEqual([
+      { id: 'paid-created-before-failure', status: 'queued' },
+    ])
+  })
+
+  it('retains a paid task after clear without overwriting newer token or pending state', async () => {
+    const store = useVideoGenerationStore()
+    store.dryRunResult = { confirmationToken: 'paid-token', realReady: true }
+    const paidCreate = createDeferred()
+    const newDryRun = createDeferred()
+    const latestDryRun = createDeferred()
+    videoGenerationApi.createVideoGenerationTask.mockReturnValue(paidCreate.promise)
+    videoGenerationApi.dryRunVideoGeneration
+      .mockReturnValueOnce(newDryRun.promise)
+      .mockReturnValueOnce(latestDryRun.promise)
+
+    const paidRequest = store.confirmRealGeneration('paid-token')
+    store.clearDraft()
+    const newRequest = store.runDryRun()
+    newDryRun.resolve({
+      code: 0,
+      data: { realReady: true, confirmationToken: 'new-token' },
+      msg: 'ok',
+    })
+    await newRequest
+    const latestRequest = store.runDryRun()
+    expect(store.submitPending).toBe(true)
+
+    paidCreate.resolve({
+      code: 0,
+      data: { taskIds: ['paid-task-after-clear'], count: 1 },
+      msg: 'ok',
+    })
+    await paidRequest
+
+    expect(store.taskList).toEqual([{ id: 'paid-task-after-clear', status: 'queued' }])
+    expect(store.dryRunResult.confirmationToken).toBe('new-token')
+    expect(store.submitPending).toBe(true)
+
+    latestDryRun.resolve({
+      code: 0,
+      data: { realReady: true, confirmationToken: 'latest-token' },
+      msg: 'ok',
+    })
+    await latestRequest
+    expect(store.dryRunResult.confirmationToken).toBe('latest-token')
+    expect(store.submitPending).toBe(false)
+  })
+
   it('polls once and updates a task in place without duplicates or timers', async () => {
     const store = useVideoGenerationStore()
     const timerSpy = vi.spyOn(globalThis, 'setTimeout')
@@ -500,7 +824,12 @@ describe('useVideoGenerationStore', () => {
       })
       .mockResolvedValueOnce({
         code: 0,
-        data: { id: 'task-1', status: 'succeeded', progress: 100 },
+        data: {
+          id: 'task-1',
+          status: 'succeeded',
+          progress: 100,
+          content: { video_url: 'https://cdn.example.test/task-1.mp4' },
+        },
         msg: 'ok',
       })
 
@@ -519,6 +848,7 @@ describe('useVideoGenerationStore', () => {
       status: 'succeeded',
       progress: 100,
       local: 'preserved',
+      content: { video_url: 'https://cdn.example.test/task-1.mp4' },
     }])
     expect(timerSpy).not.toHaveBeenCalled()
     timerSpy.mockRestore()
@@ -528,14 +858,14 @@ describe('useVideoGenerationStore', () => {
     const store = useVideoGenerationStore()
     videoGenerationApi.getVideoGenerationTask.mockResolvedValueOnce({
       code: 0,
-      data: { task_id: 'task-2', status: 'running' },
+      data: { id_task: 'task-2', status: 'running' },
       msg: 'ok',
     })
 
     await store.pollTask('task-2')
     expect(store.taskList).toEqual([{
       id: 'task-2',
-      task_id: 'task-2',
+      id_task: 'task-2',
       status: 'running',
     }])
 
@@ -550,8 +880,50 @@ describe('useVideoGenerationStore', () => {
 
     expect(store.taskList).toEqual([{
       id: 'task-2',
-      task_id: 'task-2',
+      id_task: 'task-2',
       status: 'running',
     }])
+  })
+
+  it.each([
+    [{ status: 'running' }, 'missing id'],
+    [{ id: 'different-task', status: 'running' }, 'mismatched id'],
+    [{ id: 'task-2', status: 'processing' }, 'unknown status'],
+    [{ id_task: 'task-2', status: 'succeeded' }, 'missing succeeded content'],
+    [{ id_task: 'task-2', status: 'succeeded', content: { video_url: '' } }, 'empty video URL'],
+    [{ id_task: 'task-2', status: 'succeeded', content: { video_url: 'http://cdn.test/video.mp4' } }, 'non-HTTPS video URL'],
+    [{ id_task: 'task-2', status: 'succeeded', content: { video_url: 'https://' } }, 'invalid HTTPS video URL'],
+  ])('rejects a malformed poll result without mutating task state: %s', async (data) => {
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'task-2', status: 'queued', local: 'keep' }]
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data,
+      msg: 'ok',
+    })
+
+    await expect(store.pollTask('task-2')).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_MALFORMED',
+    })
+    expect(store.taskList).toEqual([{ id: 'task-2', status: 'queued', local: 'keep' }])
+  })
+
+  it('accepts a succeeded task only with an HTTPS playable URL', async () => {
+    const store = useVideoGenerationStore()
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: {
+        id_task: 'task-success',
+        status: 'succeeded',
+        content: { video_url: 'https://cdn.example.test/result/video.mp4' },
+      },
+      msg: 'ok',
+    })
+
+    await expect(store.pollTask('task-success')).resolves.toMatchObject({
+      id: 'task-success',
+      status: 'succeeded',
+      content: { video_url: 'https://cdn.example.test/result/video.mp4' },
+    })
   })
 })

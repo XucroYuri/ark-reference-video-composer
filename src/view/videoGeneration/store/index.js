@@ -24,6 +24,15 @@ const createDefaultConfig = () => ({
 })
 
 const CONFIG_KEYS = Object.keys(createDefaultConfig())
+const CONFIG_VALIDATORS = {
+  mode: (value) => value === 'reference_media',
+  ratio: (value) => ['adaptive', '16:9', '9:16', '1:1'].includes(value),
+  resolution: (value) => ['720p', '1080p'].includes(value),
+  duration: (value) => [5, 10].includes(value),
+  count: (value) => Number.isInteger(value) && value >= 1 && value <= 4,
+  generateAudio: (value) => typeof value === 'boolean',
+}
+const TASK_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
 
 export class VideoGenerationStoreError extends Error {
   constructor(code, message, details = {}) {
@@ -56,6 +65,33 @@ function unwrapEnvelope(response) {
   return response.data
 }
 
+async function unwrapApiCall(request) {
+  let response
+  try {
+    response = await request
+  } catch (error) {
+    if (error instanceof VideoGenerationStoreError) throw error
+    if (error?.response && Object.hasOwn(error.response, 'data')) {
+      return unwrapEnvelope(error.response.data)
+    }
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_NETWORK_ERROR',
+      '视频生成网络请求失败',
+    )
+  }
+
+  if (response?.response && Object.hasOwn(response.response, 'data')) {
+    return unwrapEnvelope(response.response.data)
+  }
+  if (response instanceof Error) {
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_NETWORK_ERROR',
+      '视频生成网络请求失败',
+    )
+  }
+  return unwrapEnvelope(response)
+}
+
 function requireMedia(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)
     || typeof data.id !== 'string' || !data.id.trim()) {
@@ -75,6 +111,16 @@ function requireObject(data, message = '视频生成接口未返回有效数据'
     )
   }
   return data
+}
+
+function isPlayableHttpsUrl(value) {
+  if (typeof value !== 'string' || !value || value.trim() !== value) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password
+  } catch {
+    return false
+  }
 }
 
 export function removeMentionsByMediaId(doc, mediaId) {
@@ -102,26 +148,65 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   const removePending = ref(false)
   const submitPending = ref(false)
   let nextRealIndex = 1
+  let lifecycleEpoch = 0
+  let draftRevision = 0
+  let operationSequence = 0
+  let activeUploadOperation = null
+  let activeRemovalOperation = null
+  let activeSubmissionOperation = null
 
   function invalidateDryRun() {
     dryRunResult.value = null
   }
 
+  function markDraftChanged() {
+    draftRevision += 1
+    invalidateDryRun()
+  }
+
   watch(
     [mediaList, editorDoc, () => config],
-    invalidateDryRun,
+    markDraftChanged,
     { deep: true, flush: 'sync' },
   )
 
   function createSubmissionDto() {
-    return {
+    return JSON.parse(JSON.stringify({
       doc: editorDoc.value,
       mediaList: mediaList.value.map((item) => ({
         id: item.id,
         realIndex: item.realIndex,
       })),
       config: Object.fromEntries(CONFIG_KEYS.map((key) => [key, config[key]])),
+    }))
+  }
+
+  function captureDraftOperation() {
+    return {
+      epoch: lifecycleEpoch,
+      revision: draftRevision,
     }
+  }
+
+  function assertCurrentDraftOperation(captured) {
+    if (captured.epoch !== lifecycleEpoch || captured.revision !== draftRevision) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_STALE_OPERATION',
+        '草稿已变化，已忽略过期响应',
+      )
+    }
+  }
+
+  function createOperationId() {
+    operationSequence += 1
+    return operationSequence
+  }
+
+  function throwPending() {
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_REQUEST_PENDING',
+      '视频生成请求正在处理中',
+    )
   }
 
   function recordTaskIds(taskIds) {
@@ -157,9 +242,21 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   function setConfig(patch) {
+    const patchIsObject = patch && typeof patch === 'object' && !Array.isArray(patch)
+    const keys = patchIsObject ? Object.keys(patch) : []
+    const valid = patchIsObject && keys.every((key) => (
+      Object.hasOwn(CONFIG_VALIDATORS, key) && CONFIG_VALIDATORS[key](patch[key])
+    ))
+    if (!valid) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_INVALID_CONFIG',
+        '视频生成参数无效',
+      )
+    }
+
     let changed = false
-    for (const key of CONFIG_KEYS) {
-      if (Object.hasOwn(patch || {}, key) && config[key] !== patch[key]) {
+    for (const key of keys) {
+      if (config[key] !== patch[key]) {
         config[key] = patch[key]
         changed = true
       }
@@ -168,50 +265,75 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   async function uploadMedia(file) {
+    if (activeUploadOperation !== null || activeRemovalOperation !== null) throwPending()
+    const operationId = createOperationId()
+    const captured = captureDraftOperation()
+    activeUploadOperation = operationId
     uploadPending.value = true
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const data = requireMedia(unwrapEnvelope(await uploadReference(formData)))
+      const data = requireMedia(await unwrapApiCall(uploadReference(formData)))
+      assertCurrentDraftOperation(captured)
       return addMedia(data)
     } finally {
-      uploadPending.value = false
+      if (activeUploadOperation === operationId) {
+        activeUploadOperation = null
+        uploadPending.value = false
+      }
     }
   }
 
   async function removeMedia(mediaId) {
-    const index = mediaList.value.findIndex((item) => item.id === mediaId)
-    if (index < 0) return null
+    if (activeRemovalOperation !== null || activeUploadOperation !== null) throwPending()
+    if (!mediaList.value.some((item) => item.id === mediaId)) return null
 
+    const operationId = createOperationId()
+    const captured = captureDraftOperation()
+    activeRemovalOperation = operationId
     removePending.value = true
     try {
-      unwrapEnvelope(await deleteReference({ mediaId }))
-      const [removed] = mediaList.value.splice(index, 1)
+      await unwrapApiCall(deleteReference({ mediaId }))
+      assertCurrentDraftOperation(captured)
+      const currentIndex = mediaList.value.findIndex((item) => item.id === mediaId)
+      if (currentIndex < 0) {
+        throw new VideoGenerationStoreError(
+          'VIDEO_GENERATION_STALE_OPERATION',
+          '草稿已变化，已忽略过期响应',
+        )
+      }
+      const [removed] = mediaList.value.splice(currentIndex, 1)
       editorDoc.value = removeMentionsByMediaId(editorDoc.value, mediaId)
       invalidateDryRun()
       return removed
     } finally {
-      removePending.value = false
+      if (activeRemovalOperation === operationId) {
+        activeRemovalOperation = null
+        removePending.value = false
+      }
     }
   }
 
   async function runDryRun() {
-    if (submitPending.value) {
-      throw new VideoGenerationStoreError(
-        'VIDEO_GENERATION_REQUEST_PENDING',
-        '视频生成请求正在处理中',
-      )
-    }
+    if (activeSubmissionOperation !== null) throwPending()
 
+    const operationId = createOperationId()
+    const captured = captureDraftOperation()
+    const dto = createSubmissionDto()
+    activeSubmissionOperation = operationId
     submitPending.value = true
     try {
-      const data = requireObject(unwrapEnvelope(
-        await dryRunVideoGeneration(createSubmissionDto()),
+      const data = requireObject(await unwrapApiCall(
+        dryRunVideoGeneration(dto),
       ))
+      assertCurrentDraftOperation(captured)
       dryRunResult.value = data
       return data
     } finally {
-      submitPending.value = false
+      if (activeSubmissionOperation === operationId) {
+        activeSubmissionOperation = null
+        submitPending.value = false
+      }
     }
   }
 
@@ -223,17 +345,16 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
         '确认凭证不是当前草稿的有效凭证',
       )
     }
-    if (submitPending.value) {
-      throw new VideoGenerationStoreError(
-        'VIDEO_GENERATION_REQUEST_PENDING',
-        '视频生成请求正在处理中',
-      )
-    }
+    if (activeSubmissionOperation !== null) throwPending()
 
+    const operationId = createOperationId()
+    const captured = captureDraftOperation()
+    const dto = createSubmissionDto()
+    activeSubmissionOperation = operationId
     submitPending.value = true
     try {
-      const data = requireObject(unwrapEnvelope(await createVideoGenerationTask({
-        ...createSubmissionDto(),
+      const data = requireObject(await unwrapApiCall(createVideoGenerationTask({
+        ...dto,
         confirmationToken: token,
       })))
       if (!Array.isArray(data.taskIds)) {
@@ -248,13 +369,18 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
       recordTaskIds(error?.details?.data?.taskIds)
       throw error
     } finally {
-      if (dryRunResult.value?.confirmationToken === token) {
+      if (captured.epoch === lifecycleEpoch
+        && captured.revision === draftRevision
+        && dryRunResult.value?.confirmationToken === token) {
         dryRunResult.value = {
           ...dryRunResult.value,
           confirmationToken: '',
         }
       }
-      submitPending.value = false
+      if (activeSubmissionOperation === operationId) {
+        activeSubmissionOperation = null
+        submitPending.value = false
+      }
     }
   }
 
@@ -266,14 +392,21 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
       )
     }
 
-    const data = requireObject(unwrapEnvelope(
-      await getVideoGenerationTask({ taskId }),
+    const data = requireObject(await unwrapApiCall(
+      getVideoGenerationTask({ taskId }),
     ))
-    const responseId = data.id || data.task_id || taskId
-    if (responseId !== taskId) {
+    const responseId = typeof data.id === 'string' && data.id
+      ? data.id
+      : typeof data.id_task === 'string' && data.id_task
+        ? data.id_task
+        : ''
+    const validStatus = typeof data.status === 'string' && TASK_STATUSES.has(data.status)
+    const validSucceededContent = data.status !== 'succeeded'
+      || isPlayableHttpsUrl(data.content?.video_url)
+    if (!responseId || responseId !== taskId || !validStatus || !validSucceededContent) {
       throw new VideoGenerationStoreError(
         'VIDEO_GENERATION_API_MALFORMED',
-        '任务查询接口返回了不匹配的任务 ID',
+        '任务查询接口返回了无效任务数据',
       )
     }
 
@@ -292,6 +425,10 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   function clearDraft() {
+    lifecycleEpoch += 1
+    activeUploadOperation = null
+    activeRemovalOperation = null
+    activeSubmissionOperation = null
     mediaList.value = []
     editorDoc.value = createEmptyDoc()
     Object.assign(config, createDefaultConfig())
