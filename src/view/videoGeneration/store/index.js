@@ -227,15 +227,18 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   }
 
   function recordTaskIds(taskIds) {
-    if (!Array.isArray(taskIds)) return
+    if (!Array.isArray(taskIds)) return []
 
     const existing = new Set(taskList.value.map((task) => task.id))
+    const recorded = []
     for (const value of taskIds) {
       const id = typeof value === 'string' ? value.trim() : ''
       if (!id || existing.has(id)) continue
       existing.add(id)
       taskList.value.push({ id, status: 'queued' })
+      recorded.push(id)
     }
+    return recorded
   }
 
   function addMedia(media) {
@@ -390,10 +393,10 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
           '创建任务接口未返回任务 ID 列表',
         )
       }
-      recordTaskIds(data.taskIds)
+      recordTaskIds(data.taskIds).forEach((taskId) => startPolling(taskId))
       return data
     } catch (error) {
-      recordTaskIds(error?.details?.data?.taskIds)
+      recordTaskIds(error?.details?.data?.taskIds).forEach((taskId) => startPolling(taskId))
       throw error
     } finally {
       if (captured.epoch === lifecycleEpoch

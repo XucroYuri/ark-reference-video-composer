@@ -885,6 +885,33 @@ describe('useVideoGenerationStore', () => {
     expect(store.submitPending).toBe(false)
   })
 
+  it('starts polling returned task IDs after confirmed real generation without recreating tasks', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    store.dryRunResult = { confirmationToken: 'poll-token', realReady: true }
+    videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { taskIds: ['task-poll'], count: 1 },
+      msg: 'ok',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: 'task-poll', status: 'running' },
+      msg: 'ok',
+    })
+
+    await store.confirmRealGeneration('poll-token')
+    expect(store.taskList).toEqual([{ id: 'task-poll', status: 'queued' }])
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(videoGenerationApi.createVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledWith({
+      taskId: 'task-poll',
+    })
+    expect(store.taskList).toEqual([{ id: 'task-poll', status: 'running' }])
+  })
+
   it('does not retry and retains partial task IDs from a rejected creation envelope', async () => {
     const store = useVideoGenerationStore()
     store.dryRunResult = { confirmationToken: 'single-use-token', realReady: true }
@@ -1162,6 +1189,7 @@ describe('useVideoGenerationStore', () => {
     await vi.advanceTimersByTimeAsync(3000)
 
     expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.createVideoGenerationTask).not.toHaveBeenCalled()
     expect(store.taskList).toEqual([])
     expect(vi.getTimerCount()).toBe(0)
   })
