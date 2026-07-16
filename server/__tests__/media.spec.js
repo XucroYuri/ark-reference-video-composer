@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -72,6 +72,12 @@ describe('videoGeneration local media', () => {
     })
     expect(json.data.previewUrl).toMatch(/^\/uploads\//)
     expect(await readFile(join(uploadDir, basename(json.data.previewUrl)))).toEqual(PNG_1X1)
+
+    const readResponse = await fetch(`${baseUrl}${json.data.previewUrl}`)
+    expect(readResponse.status).toBe(200)
+    expect(readResponse.headers.get('content-type')).toMatch(/^image\/png\b/)
+    expect(readResponse.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(Buffer.from(await readResponse.arrayBuffer())).toEqual(PNG_1X1)
   })
 
   it('rejects a spoofed MIME type before writing to disk', async () => {
@@ -324,10 +330,13 @@ describe('videoGeneration local media', () => {
       'https://192.168.1.1/base',
       'https://169.254.1.1/base',
       'https://0.0.0.0/base',
+      'https://8.8.8.8/base',
+      'https://192.88.99.1/base',
       'https://[::1]/base',
       'https://[fc00::1]/base',
       'https://[fe80::1]/base',
       'https://[::]/base',
+      'https://[2606:4700:4700::1111]/base',
     ]
     for (const base of invalidBases) {
       expect(buildPublicMediaUrl(base, 'safe.png')).toBe('')
@@ -343,5 +352,47 @@ describe('videoGeneration local media', () => {
       data: { path: '/uploads/missing.png' },
       msg: '请求路径不存在',
     })
+  })
+
+  it('serves only indexed ID/extension pairs and hides loose files and the index', async () => {
+    const uploaded = await upload(baseUrl)
+    const media = uploaded.json.data
+    await writeFile(join(uploadDir, 'loose.png'), PNG_1X1)
+    const unindexedUuid = '8216e288-cd04-412e-9b4c-f0067d11ec5e.png'
+    await writeFile(join(uploadDir, unindexedUuid), PNG_1X1)
+    const paths = [
+      '/uploads/loose.png',
+      `/uploads/${unindexedUuid}`,
+      `/uploads/${media.id}.jpg`,
+      '/uploads/.media-index.json',
+    ]
+
+    for (const path of paths) {
+      const response = await fetch(`${baseUrl}${path}`)
+      expect(response.status).toBe(404)
+      expect(await response.json()).toMatchObject({ code: 40400 })
+    }
+  })
+
+  it('rejects an indexed filename replaced by an outside symlink', async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), 'ark-outside-'))
+    try {
+      const media = await mediaStore.save({
+        buffer: PNG_1X1,
+        mimetype: 'image/png',
+        originalname: 'symlink.png',
+      })
+      const storedPath = join(uploadDir, basename(media.previewUrl))
+      const outsidePath = join(outsideDir, 'outside.png')
+      await writeFile(outsidePath, PNG_1X1)
+      await rm(storedPath)
+      await symlink(outsidePath, storedPath)
+
+      const response = await fetch(`${baseUrl}${media.previewUrl}`)
+      expect(response.status).toBe(404)
+      expect(await response.json()).toMatchObject({ code: 40400 })
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true })
+    }
   })
 })

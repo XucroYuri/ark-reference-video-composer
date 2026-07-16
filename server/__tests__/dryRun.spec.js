@@ -340,4 +340,74 @@ describe('videoGeneration dryRun', () => {
     })
     expect(arkClient.createTask).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['ratio', 'adaptive'],
+    ['ratio', '16:9'],
+    ['ratio', '9:16'],
+    ['ratio', '1:1'],
+    ['resolution', '720p'],
+    ['resolution', '1080p'],
+    ['duration', 5],
+    ['duration', 10],
+    ['count', 1],
+    ['count', 2],
+    ['count', 3],
+    ['count', 4],
+  ])('accepts approved cost boundary %s=%s', async (field, value) => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        config: { ...validBody.config, [field]: value },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+  })
+
+  it.each([
+    ['ratio', '21:9'],
+    ['ratio', '4:3'],
+    ['ratio', '3:4'],
+    ['resolution', '480p'],
+    ['resolution', '4k'],
+    ['duration', 4],
+    ['duration', 15],
+    ['count', 5],
+    ['count', 8],
+  ])('rejects unapproved cost boundary %s=%s', async (field, value) => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        config: { ...validBody.config, [field]: value },
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      code: 40006,
+      data: { reason: 'INVALID_CONFIG' },
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
+
+  it('preserves a 413 envelope for an oversized JSON body', async () => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(2 * 1024 * 1024) }),
+    })
+
+    expect(response.status).toBe(413)
+    expect(await response.json()).toEqual({
+      code: 41300,
+      data: {},
+      msg: '请求体过大',
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
 })

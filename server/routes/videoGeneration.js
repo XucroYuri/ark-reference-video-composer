@@ -15,8 +15,10 @@ export const fail = (res, code, msg, data = {}, status = 400) => (
 )
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const RATIOS = new Set(['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'])
-const RESOLUTIONS = new Set(['480p', '720p', '1080p', '4k'])
+const RATIOS = new Set(['adaptive', '16:9', '9:16', '1:1'])
+const RESOLUTIONS = new Set(['720p', '1080p'])
+const DURATIONS = new Set([5, 10])
+const COUNTS = new Set([1, 2, 3, 4])
 
 function validateGenerationConfig(value) {
   const errors = []
@@ -28,11 +30,11 @@ function validateGenerationConfig(value) {
   if (value.mode !== 'reference_media') add('config.mode', '仅支持 reference_media')
   if (!RATIOS.has(value.ratio)) add('config.ratio', '比例不在允许范围内')
   if (!RESOLUTIONS.has(value.resolution)) add('config.resolution', '分辨率不在允许范围内')
-  if (!Number.isInteger(value.duration) || value.duration < 4 || value.duration > 15) {
-    add('config.duration', '时长必须是 4 到 15 的整数')
+  if (!DURATIONS.has(value.duration)) {
+    add('config.duration', '时长必须是 5 或 10 秒')
   }
-  if (!Number.isInteger(value.count) || value.count < 1 || value.count > 8) {
-    add('config.count', '数量必须是 1 到 8 的整数')
+  if (!COUNTS.has(value.count)) {
+    add('config.count', '数量必须是 1 到 4 的整数')
   }
   if (typeof value.generateAudio !== 'boolean') {
     add('config.generateAudio', '必须是布尔值')

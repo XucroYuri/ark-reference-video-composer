@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  constants,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { rename, unlink, writeFile } from 'node:fs/promises'
+import { lstat, open, rename, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { isIP } from 'node:net'
 
@@ -42,42 +43,12 @@ export class MediaStoreError extends Error {
   }
 }
 
-function isNonPublicIpv4(hostname) {
-  const [first, second, third] = hostname.split('.').map(Number)
-  return first === 0
-    || first === 10
-    || first === 127
-    || first >= 224
-    || (first === 100 && second >= 64 && second <= 127)
-    || (first === 169 && second === 254)
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 168)
-    || (first === 192 && second === 0 && (third === 0 || third === 2))
-    || (first === 198 && (second === 18 || second === 19 || second === 51))
-    || (first === 203 && second === 0 && third === 113)
-}
-
-function isNonPublicIpv6(hostname) {
-  const normalized = hostname.toLowerCase()
-  return normalized === '::'
-    || normalized === '::1'
-    || normalized.startsWith('fc')
-    || normalized.startsWith('fd')
-    || /^fe[89ab]/.test(normalized)
-    || normalized.startsWith('ff')
-    || normalized.startsWith('2001:db8')
-    || normalized.startsWith('::ffff:')
-}
-
 function isPublicHostname(hostname) {
   const normalized = hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
   if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost')) return false
   if (normalized.endsWith('.local')) return false
 
-  const ipVersion = isIP(normalized)
-  if (ipVersion === 4) return !isNonPublicIpv4(normalized)
-  if (ipVersion === 6) return !isNonPublicIpv6(normalized)
-  return true
+  return isIP(normalized) === 0
 }
 
 export function buildPublicMediaUrl(baseUrl, filename) {
@@ -372,5 +343,53 @@ export function createMediaStore({
     })
   }
 
-  return { save, get, list, remove }
+  async function read(filename) {
+    const match = ORPHAN_PATTERN.exec(filename || '')
+    const record = match ? mediaById.get(match[1]) : null
+    if (!record || record.filename !== filename) {
+      throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+    }
+
+    const path = join(uploadDir, record.filename)
+    let handle
+    try {
+      const before = await lstat(path)
+      if (!before.isFile() || before.isSymbolicLink() || before.size !== record.size) {
+        throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+      }
+      handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
+      const opened = await handle.stat()
+      if (
+        !opened.isFile()
+        || opened.dev !== before.dev
+        || opened.ino !== before.ino
+        || opened.size !== record.size
+      ) {
+        throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+      }
+
+      const buffer = Buffer.alloc(record.size)
+      let offset = 0
+      while (offset < record.size) {
+        const { bytesRead } = await handle.read(buffer, offset, record.size - offset, offset)
+        if (bytesRead === 0) throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+        offset += bytesRead
+      }
+      const after = await handle.stat()
+      if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== record.size) {
+        throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+      }
+      return { buffer, mimeType: record.mimeType }
+    } catch (error) {
+      if (error instanceof MediaStoreError) throw error
+      if (['ENOENT', 'ELOOP', 'ENOTDIR'].includes(error?.code)) {
+        throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
+      }
+      throw error
+    } finally {
+      await handle?.close()
+    }
+  }
+
+  return { save, get, list, remove, read }
 }
