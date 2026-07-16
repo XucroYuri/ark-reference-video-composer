@@ -1,0 +1,242 @@
+import { readFile } from 'node:fs/promises'
+
+import ElementPlus from 'element-plus'
+import { createPinia, setActivePinia } from 'pinia'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
+
+import VideoGeneration from '../index.vue'
+import { useVideoGenerationStore } from '../store'
+import * as videoGenerationApi from '@/api/videoGeneration'
+
+vi.mock('@/api/videoGeneration', () => ({
+  uploadReference: vi.fn(),
+  deleteReference: vi.fn(),
+  dryRunVideoGeneration: vi.fn(),
+  createVideoGenerationTask: vi.fn(),
+  getVideoGenerationTask: vi.fn(),
+  deleteVideoGenerationTask: vi.fn(),
+}))
+
+const imagePath = '/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png'
+const mediaEnvelope = {
+  code: 0,
+  data: {
+    id: 'media-1',
+    kind: 'image',
+    name: '小豆Q版.png',
+    mimeType: 'image/png',
+    size: 1024,
+    status: 'ready',
+    previewUrl: '/uploads/media-1.png',
+  },
+  msg: '上传成功',
+}
+const deleteEnvelope = { code: 0, data: {}, msg: '删除成功' }
+const dryRunEnvelope = {
+  code: 0,
+  data: {
+    realReady: false,
+    confirmationToken: '',
+    blockers: [{ code: 'REAL_GENERATION_DISABLED', message: '真实生成未启用' }],
+    serialization: {
+      readablePrompt: '让 @图片1 挥手',
+      templatePrompt: '让 <<<image_1_1>>> 挥手',
+      modelPrompt: '让 【图片 1】 挥手',
+      media: [{ id: 'media-1', realIndex: 1, url: 'local://media-1' }],
+    },
+    request: {
+      model: 'doubao-seedance-2-0-260128',
+      ratio: 'adaptive',
+      resolution: '720p',
+      duration: 5,
+      generate_audio: true,
+      content: [{ type: 'text', text: '让 【图片 1】 挥手' }],
+    },
+  },
+  msg: 'Dry-run 校验成功',
+}
+
+async function flush() {
+  await Promise.resolve()
+  await nextTick()
+}
+
+async function createImageFile() {
+  const bytes = await readFile(imagePath)
+  return new File([bytes], '小豆Q版.png', { type: 'image/png' })
+}
+
+function mountComposer() {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  return mount(VideoGeneration, {
+    attachTo: document.body,
+    global: {
+      plugins: [pinia, ElementPlus],
+      stubs: {
+        transition: false,
+        teleport: true,
+      },
+    },
+  })
+}
+
+async function uploadReference(wrapper) {
+  const upload = wrapper.findComponent({ name: 'ElUpload' })
+  const file = await createImageFile()
+  await upload.props('onChange')({ raw: file, name: file.name })
+  await flush()
+  await flush()
+}
+
+describe('VideoGeneration composer', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    videoGenerationApi.uploadReference.mockResolvedValue(mediaEnvelope)
+    videoGenerationApi.deleteReference.mockResolvedValue(deleteEnvelope)
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(dryRunEnvelope)
+    videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { taskIds: ['task-1'] },
+      msg: '创建成功',
+    })
+  })
+
+  it('renders the exact default controls and prompt guidance', () => {
+    const wrapper = mountComposer()
+
+    expect(wrapper.text()).toContain('体验视频生成，让创意摇动')
+    expect(wrapper.text()).toContain('参考内容')
+    expect(wrapper.text()).toContain('使用 @ 可快速引用上传的文件')
+    expect(wrapper.text()).toContain('参考生成')
+    expect(wrapper.text()).toContain('智能比例')
+    expect(wrapper.text()).toContain('720P')
+    expect(wrapper.text()).toContain('5秒')
+    expect(wrapper.text()).toContain('1条')
+    expect(wrapper.text()).toContain('有声')
+    expect(wrapper.text()).toContain('0.046 元/千 tokens')
+    wrapper.unmount()
+  })
+
+  it('uploads 小豆Q版.png and displays 图片1', async () => {
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+
+    expect(videoGenerationApi.uploadReference).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('图片1')
+    wrapper.unmount()
+  })
+
+  it('inserts @图片1 only after the reference becomes ready', async () => {
+    const wrapper = mountComposer()
+
+    expect(wrapper.find('.mention-trigger').exists()).toBe(false)
+    await uploadReference(wrapper)
+    await wrapper.find('.mention-trigger').trigger('click')
+    await flush()
+
+    expect(wrapper.find('.ProseMirror').text()).toContain('@图片1')
+    wrapper.unmount()
+  })
+
+  it('updates ratio, resolution, duration, count, and audio configuration', async () => {
+    const wrapper = mountComposer()
+
+    await wrapper.find('[data-testid="generation-options-trigger"]').trigger('click')
+    await flush()
+    await wrapper.find('[data-testid="ratio-select"]').setValue('16:9')
+    await wrapper.find('[data-testid="resolution-select"]').setValue('1080p')
+    await wrapper.find('[data-testid="duration-select"]').setValue('10')
+    await wrapper.find('[data-testid="count-select"]').setValue('4')
+    await wrapper.find('[data-testid="audio-select"]').setValue('false')
+    await flush()
+
+    const store = useVideoGenerationStore()
+    expect(store.config).toMatchObject({
+      ratio: '16:9',
+      resolution: '1080p',
+      duration: 10,
+      count: 4,
+      generateAudio: false,
+    })
+    expect(wrapper.text()).toContain('1080P')
+    expect(wrapper.text()).toContain('10秒')
+    expect(wrapper.text()).toContain('4条')
+    expect(wrapper.text()).toContain('无声')
+    wrapper.unmount()
+  })
+
+  it('opens Dry-run preview instead of creating a paid task', async () => {
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('form').trigger('submit')
+    await flush()
+    await flush()
+
+    expect(videoGenerationApi.dryRunVideoGeneration).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.createVideoGenerationTask).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('可读提示词')
+    expect(wrapper.text()).toContain('控制台兼容模板')
+    expect(wrapper.text()).toContain('模型规范文本')
+    expect(wrapper.text()).toContain('媒体映射')
+    expect(wrapper.text()).toContain('最终 API 请求')
+    expect(wrapper.text()).toContain('仅复制 JSON')
+    wrapper.unmount()
+  })
+
+  it('clear all resets editor, media, parameters, preview, and tasks', async () => {
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('[data-testid="generation-options-trigger"]').trigger('click')
+    await flush()
+    await wrapper.find('[data-testid="ratio-select"]').setValue('16:9')
+    await wrapper.find('.mention-trigger').trigger('click')
+    await flush()
+    await wrapper.find('.clear-all-button').trigger('click')
+    await flush()
+
+    const store = useVideoGenerationStore()
+    expect(store.mediaList).toEqual([])
+    expect(store.taskList).toEqual([])
+    expect(store.dryRunResult).toBeNull()
+    expect(store.config).toMatchObject({
+      ratio: 'adaptive',
+      resolution: '720p',
+      duration: 5,
+      count: 1,
+      generateAudio: true,
+    })
+    expect(wrapper.text()).toContain('参考内容')
+    expect(wrapper.text()).not.toContain('图片1')
+    wrapper.unmount()
+  })
+
+  it('requires confirmation before deleting media referenced by the editor', async () => {
+    const confirm = vi.fn()
+    vi.stubGlobal('confirm', confirm)
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('.mention-trigger').trigger('click')
+    await flush()
+
+    confirm.mockReturnValueOnce(false)
+    await wrapper.find('[aria-label="删除图片1"]').trigger('click')
+    await flush()
+    expect(videoGenerationApi.deleteReference).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('图片1')
+
+    confirm.mockReturnValueOnce(true)
+    await wrapper.find('[aria-label="删除图片1"]').trigger('click')
+    await flush()
+    expect(videoGenerationApi.deleteReference).toHaveBeenCalledWith({ mediaId: 'media-1' })
+    expect(useVideoGenerationStore().mediaList).toEqual([])
+    wrapper.unmount()
+  })
+})
