@@ -1,40 +1,129 @@
 # Behaviors
 
-## Task 1 gate
+## Evidence and safety boundary
 
-**Status: BLOCKED — incomplete and not builder-ready.** The missing live behavior evidence gates downstream pixel-fidelity builder work. The partial screenshot package may be retained for provenance, but it is not sufficient to implement or approve Ark-exact interactions.
+- Live title: `火山方舟 - 体验`.
+- Live URL: `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`.
+- Browser: authenticated OpenCLI session `ark-recon`.
+- Page uniqueness before upload: one `form`, one `input[type=file]`, one `[contenteditable=true][role=textbox]`, and one `[data-testid=video-sender-submit-button]`.
+- Authorized file: `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png`, `86,673` bytes.
+- The submit/generate control was never clicked. DOM checks found zero task/result test-id nodes after upload and editing. No video task was created and no generation cost was triggered.
 
-## Source access and safety outcome
-
-- Controller-verified page title: `火山方舟 - 体验`.
-- Controller-verified URL: `https://console.volcengine.com/ark/region:cn-beijing/experience/gen_video?model=doubao-seedance-2-0-260128`.
-- The exact Ark tab could be opened in the selected in-app browser, but every DOM and screenshot interaction timed out.
-- The local reference file `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png` exists and is `86,673` bytes.
-- No live upload was performed. The prompt was not edited, the submit/generate control was not clicked, no Ark task was created, and no generation cost was incurred.
+The prior in-app browser timeout is resolved provenance, not a current gate. OpenCLI `browser upload` first returned `Not allowed`; its retry exposed a known stale `markerAttr` declaration in CLI `1.7.18`. The same OpenCLI browser bridge then attached the one authorized PNG by assigning a single `File` through `DataTransfer` and dispatching `input` and `change`. Ark accepted it and rendered the real uploaded thumbnail. No other file was attached.
 
 ## Mandatory interaction sweep
 
-| Sweep | Result |
+### Scroll
+
+The composer is ordinary flow content inside `#exp-studio-conversation-sender-scroll-container`.
+
+| State | Exact result |
 | --- | --- |
-| Scroll | Unavailable — blocking: DOM/interaction timeout prevented a controlled source sweep |
-| Click | Unavailable — blocking: no source control was clicked, preserving the no-cost boundary |
-| Hover | Unavailable — blocking: pointer interaction timed out |
-| Keyboard | Unavailable — blocking: the editor could not be focused or typed into safely |
-| Responsive | Unavailable — blocking at `1440 × 900`, `768 × 1024`, and `390 × 844` because viewport/screenshot interaction timed out |
+| Container | `clientHeight=552`, `scrollHeight=3339`, `scroll-behavior:auto`, `scroll-snap-type:none` |
+| `scrollTop=0` | Form `x=390,y=275,width=880,height=152`; `position:static`; `top:auto`; `z-index:auto` |
+| `scrollTop=120` | Form `x=390,y=155,width=880,height=152`; style values unchanged |
+| Restore | `scrollTop` returned to `0` |
 
-## Ark state evidence
+The form moves one-for-one with the scroll container. It is not sticky, fixed, scroll-snapped, or scroll-animated.
 
-The authoritative Ark crop records one state only: a reference thumbnail labeled `图片1` is present, the prompt area still shows guidance, and the bottom control row is visible.
+### Click
 
-Verbatim visible guidance:
+- Clicking the parameter trigger opens the source parameter popover. It does not alter the current selections until an option is clicked.
+- Clicking the mode combobox opens a listbox with `参考生成`, `首尾帧`, and `版权IP生成`; `参考生成` is selected.
+- Clicking the active mention-menu item inserts one atomic `@图片1` node and closes the menu.
+- Clicking the inserted mention keeps the editor active and adds `aml-arco-popover-open` to its inner alignment wrapper; a source tooltip layer opens without text.
+- The `全部清空` control was inspected and hover-tested but not clicked, preserving the requested inserted-reference evidence. Its destructive result is not claimed as source evidence.
+- The submit button was queried and hover-tested only. It received no click event.
+
+### Hover
+
+Hover was applied to the ready submit button, `@` trigger, parameter trigger, and clear-all button. For all four, the checked computed properties—background, border, shadow, opacity, transform, ink, and cursor—remained the same as their resting values. Their source transition declarations remain in the design-token record.
+
+### Keyboard and editor
+
+1. `browser type` entered `让 @` into the unique textbox.
+2. Ark converted the trailing `@` into `<span class="suggestion is-empty">@</span>` and opened the mention menu.
+3. The sole menu item had class `mentionListItem-jQvMWE active-Ae7A0B` immediately on open, establishing the keyboard-active state.
+4. Selecting it inserted one `contenteditable="false"`, draggable node labeled `@图片1`.
+5. The caret was placed after the node and ` 挥手` was inserted, producing exact editor text `让 @图片1 挥手`.
+6. A single `Backspace` with the caret immediately after the atomic node did not delete it; the node count remained `1`. Do not implement single-Backspace deletion as a confirmed source behavior.
+
+OpenCLI `browser type` has replace-all semantics for contenteditable fields. The trailing fragment was therefore inserted with a focused browser `execCommand("insertText")`, which triggered the live ProseMirror editor and preserved the atomic node.
+
+### Responsive
+
+- `1440 × 900`: full composer and submit visible.
+- `768 × 1024`: composer narrows, prompt wraps, all controls remain visible on one row.
+- `390 × 844`: the Ark page retains a wider inner layout and clips horizontally. Only the left part of the composer is visible; submit is off-screen. This is source behavior, not a capture defect.
+
+## State matrix
+
+| State | Source-backed result |
+| --- | --- |
+| Empty reference | `ark-video-composer-desktop.png`, `tablet.png`, and `mobile.png`; tile reads `参考内容`; no thumbnail; submit is disabled |
+| Uploaded reference | `ark-video-composer-reference-added.png`; one thumbnail labeled `图片1`; overlapping add button and `全部清空` appear |
+| `@` menu closed | No `.mentionList-BMGCpP` in DOM after insertion |
+| `@` menu open | `ark-video-composer-mention-menu.png`; body-level `react-renderer`, `160 × 103px`, `z-index:9999` |
+| `@` menu keyboard-active | First and only item carries `active-Ae7A0B` immediately after typing `@` |
+| Mention inserted | One `.node-mediaTagSlot`, `contenteditable=false`, `draggable=true`, label `@图片1` |
+| Mention focused | Editor stays active; inner wrapper receives `aml-arco-popover-open`; tooltip layer opens |
+| Mention deletion key | One Backspace immediately after the node is a no-op; complete removal sequence was not exercised |
+| Parameter menu open | Popover lists all ratio, resolution, duration, quantity, and sound choices below |
+| Parameter selected | Trigger shows `智能比例`, `720P`, `5秒`, `1条`, `有声` |
+| Empty prompt | Guidance appears in the empty-state captures; disabled submit has `disabled=true`, opacity `0.5`, cursor `not-allowed` |
+| Valid prompt | With upload and `让 @图片1 挥手`, submit has `disabled=false`, opacity `1`, `#5252FF`, pointer cursor |
+| Clear-all available | Button appears after upload, text `全部清空`; source click result not exercised |
+
+## Parameter popover content
+
+| Group | Exact source choices | Selected in trigger |
+| --- | --- | --- |
+| 视频比例 | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `智能` | `智能比例` |
+| 分辨率 | `480P`, `720P`, `1080P`, `4K` | `720P` |
+| 视频时长 | `按秒数`, `智能时长`, `4s` through `15s` | `5秒` |
+| 选择生成数量 | `1` through `8` | `1条` |
+| 输出声音 | `开`, `关` | `有声` |
+
+## Mention menu content and DOM
 
 ```text
-使用@可快速引用上传的文件，如：参考@视频1中的动作，生成@图片2和@图片3中的角色打斗的视频。
+全部   图片
+图片1
 ```
 
-Verbatim visible control/value copy:
+```html
+<div class="react-renderer">
+  <div class="mentionList-BMGCpP mentionListWithTabs-nxTEO8">
+    <div class="mentionTabs-mXN7co" role="tablist">
+      <button role="tab" aria-selected="true"><span>全部</span></button>
+      <button role="tab" aria-selected="false"><span>图片</span></button>
+    </div>
+    <div class="mentionListItems-M_bmDA">
+      <div class="mentionListScroll-wxPe9G">
+        <div class="mentionListItem-jQvMWE active-Ae7A0B">
+          <img class="ark-sender-mediaIcon">
+          <div class="label-ecmScL">图片1</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+## Submit-state evidence
+
+| Condition | Disabled | Background | Opacity | Cursor |
+| --- | --- | --- | --- | --- |
+| Empty default composer | `true` | `#ACB4FF` | `0.5` | `not-allowed` |
+| Reference uploaded and valid editor content | `false` | `#5252FF` | `1` | `pointer` |
+
+The source also enabled submit after the reference upload before a textual prompt was inserted. A clone should therefore derive readiness from Ark's accepted-input model rather than requiring non-empty plain text alone.
+
+## Verbatim source copy
 
 ```text
+参考内容
+使用@可快速引用上传的文件，如：参考@视频1中的动作，生成@图片2和@图片3中的角色打斗的视频。
 图片1
 参考生成
 智能比例
@@ -42,40 +131,7 @@ Verbatim visible control/value copy:
 5秒
 1条
 有声
+@
 全部清空
 0.046 元/千 tokens
-@
 ```
-
-## Required state matrix
-
-| State | Evidence status |
-| --- | --- |
-| Empty reference | Unavailable — blocking: no default-state Ark capture |
-| Uploaded/reference-added | Visually captured: portrait thumbnail, `图片1` label, overlapping add chip |
-| `@` menu closed | Not established; a standalone `@` control is visible, but menu state cannot be inferred |
-| `@` menu open | Unavailable — blocking: no Ark suggestion-menu capture |
-| `@` menu keyboard-selected | Unavailable — blocking: no controlled keyboard session |
-| Mention inserted | Unavailable — blocking: guidance contains example `@` text, not an inserted editor node |
-| Mention focused | Unavailable — blocking |
-| Mention deleted | Unavailable — blocking |
-| Parameter menu open | Unavailable — blocking |
-| Parameter selected | Visible values are `智能比例`, `720P`, `5秒`, `1条`, and `有声`; menu mechanics were not tested |
-| Empty prompt | The editor displays guidance; source document emptiness was not inspectable |
-| Valid prompt | Unavailable — blocking |
-| Disabled submit | Unavailable — blocking: the purple circle's semantic state cannot be inferred from color alone |
-| Ready submit | Unavailable — blocking: the purple circle's semantic state cannot be inferred from color alone |
-| Clear-all | `全部清空` is visible; its click result was not tested |
-| Default form copy `参考内容` | Unavailable — blocking: it is not visible in the supplied reference-added crop and could not be live-verified |
-
-## Corroborating Jimeng evidence
-
-- `docs/design-references/jimeng-image-generation-mention-affordance.png` visibly combines a reference thumbnail, a prompt hint containing a boxed `@`, compact parameter controls, and a circular submit affordance.
-- `docs/design-references/jimeng-video-generation-mention-affordance.png` visibly combines a reference thumbnail, the hint `使用 @ 快速调用参考内容，例如：@图片1 模仿 @视频1 的动作，音色参考 @音频1`, compact video controls, and a circular submit affordance.
-- These images corroborate the broad upload-plus-mention interaction pattern only. They do not establish Ark menu contents, Ark atomic-node behavior, Ark keyboard rules, Ark colors, or Ark layout values.
-
-## Blocking recovery obligations
-
-- Downstream Ark pixel-fidelity builder work is gated. Product requirements and Jimeng patterns cannot replace missing Ark source behavior evidence.
-- Task 10 must re-attempt default, mention-menu, inserted/focused/deleted mention, parameter-menu, hover, keyboard, clear-all, submit-state, `参考内容` form-content, and responsive source evidence in the selected in-app browser.
-- Real generation remains outside automated verification. Stop at Dry-run unless the user gives action-time confirmation for a potentially charged Ark task.
