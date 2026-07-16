@@ -1,22 +1,24 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
-const serverEntrypoint = new URL('../server/index.js', import.meta.url)
+const serverEntrypointLabel = process.env.SERVE_SERVER_ENTRYPOINT || 'server/index.js'
+const serverEntrypoint = resolve(projectRoot, serverEntrypointLabel)
 const services = []
 
 if (existsSync(serverEntrypoint)) {
-  services.push({ name: 'server', args: ['run', 'dev:server'] })
+  services.push({ name: 'server', command: process.execPath, args: ['--watch', serverEntrypoint] })
 } else {
-  console.warn('[serve] server/index.js is not available; starting the frontend only')
+  console.warn(`[serve] ${serverEntrypointLabel} is not available; starting the frontend only`)
 }
 
-services.push({ name: 'frontend', args: ['run', 'dev:web'] })
+services.push({ name: 'frontend', command: 'npm', args: ['run', 'dev:web'] })
 
-const children = services.map(({ name, args }) => ({
+const children = services.map(({ name, command, args }) => ({
   name,
-  process: spawn('npm', args, {
+  process: spawn(command, args, {
     cwd: projectRoot,
     stdio: 'inherit',
     detached: process.platform !== 'win32',

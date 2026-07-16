@@ -82,14 +82,24 @@ afterEach(async () => {
 describe('combined development runtime', () => {
   it('keeps the frontend reachable when the later server entrypoint is absent', async () => {
     const port = await findAvailablePort()
-    const { child, getOutput } = startServe({ VITE_CLI_PORT: String(port) })
+    const fixtureDir = await mkdtemp(join(tmpdir(), 'ark-missing-server-'))
+    const missingEntrypoint = join(fixtureDir, 'server-entrypoint-that-does-not-exist.js')
 
-    const response = await waitForFrontend(`http://127.0.0.1:${port}/`, child, getOutput)
-    expect(await response.text()).toContain('方舟参考视频生成')
-    expect(getOutput()).toContain('server/index.js is not available; starting the frontend only')
+    try {
+      const { child, getOutput } = startServe({
+        SERVE_SERVER_ENTRYPOINT: missingEntrypoint,
+        VITE_CLI_PORT: String(port),
+      })
 
-    const result = await stopServe(child)
-    expect(result.code).toBe(0)
+      const response = await waitForFrontend(`http://127.0.0.1:${port}/`, child, getOutput)
+      expect(await response.text()).toContain('方舟参考视频生成')
+      expect(getOutput()).toContain(`${missingEntrypoint} is not available; starting the frontend only`)
+
+      const result = await stopServe(child)
+      expect(result.code).toBe(0)
+    } finally {
+      await rm(fixtureDir, { recursive: true, force: true })
+    }
   }, 20000)
 
   it('propagates the frontend child exit code instead of reporting success', async () => {
@@ -99,7 +109,10 @@ describe('combined development runtime', () => {
     await chmod(fakeNpm, 0o755)
 
     try {
-      const { child } = startServe({ PATH: `${fakeBin}:${process.env.PATH}` })
+      const { child } = startServe({
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        SERVE_SERVER_ENTRYPOINT: join(fakeBin, 'server-entrypoint-that-does-not-exist.js'),
+      })
       const result = await waitForExit(child)
       activeChildren.delete(child)
       expect(result.code).toBe(7)
