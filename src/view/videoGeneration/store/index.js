@@ -158,6 +158,8 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   let activeRemovalOperation = null
   let activeSubmissionOperation = null
   const pollingTimers = new Map()
+  const activePollingTasks = new Set()
+  const pollingEpochByTask = new Map()
 
   function invalidateDryRun() {
     dryRunResult.value = null
@@ -414,7 +416,31 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     }
   }
 
-  async function pollTask(taskId) {
+  function getPollingEpoch(taskId) {
+    return pollingEpochByTask.get(taskId) || 0
+  }
+
+  function bumpPollingEpoch(taskId) {
+    pollingEpochByTask.set(taskId, getPollingEpoch(taskId) + 1)
+  }
+
+  function isCurrentPollingGuard(taskId, guard) {
+    return !guard || (
+      activePollingTasks.has(taskId)
+      && guard.epoch === getPollingEpoch(taskId)
+      && guard.lifecycleEpoch === lifecycleEpoch
+    )
+  }
+
+  function assertCurrentPollingGuard(taskId, guard) {
+    if (isCurrentPollingGuard(taskId, guard)) return
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_STALE_OPERATION',
+      '任务轮询已停止，已忽略过期响应',
+    )
+  }
+
+  async function pollTask(taskId, pollingGuard) {
     if (typeof taskId !== 'string' || !taskId.trim()) {
       throw new VideoGenerationStoreError(
         'VIDEO_GENERATION_INVALID_TASK_ID',
@@ -425,6 +451,7 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     const data = requireObject(await unwrapApiCall(
       getVideoGenerationTask({ taskId }),
     ))
+    assertCurrentPollingGuard(taskId, pollingGuard)
     const responseId = typeof data.id === 'string' && data.id
       ? data.id
       : typeof data.task_id === 'string' && data.task_id
@@ -468,21 +495,38 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
 
   function stopPolling(taskId) {
     if (typeof taskId === 'string' && taskId.trim()) {
-      clearPollingTimer(taskId)
+      const normalizedTaskId = taskId.trim()
+      clearPollingTimer(normalizedTaskId)
+      activePollingTasks.delete(normalizedTaskId)
+      bumpPollingEpoch(normalizedTaskId)
       return
     }
-    for (const id of pollingTimers.keys()) clearPollingTimer(id)
+    for (const id of new Set([...activePollingTasks, ...pollingTimers.keys()])) {
+      stopPolling(id)
+    }
   }
 
   function schedulePolling(taskId) {
     clearPollingTimer(taskId)
+    const pollingGuard = {
+      epoch: getPollingEpoch(taskId),
+      lifecycleEpoch,
+    }
     const timer = setTimeout(async () => {
       pollingTimers.delete(taskId)
       try {
-        const task = await pollTask(taskId)
-        if (!TERMINAL_TASK_STATUSES.has(task.status)) schedulePolling(taskId)
+        const task = await pollTask(taskId, pollingGuard)
+        if (!isCurrentPollingGuard(taskId, pollingGuard)) return
+        if (TERMINAL_TASK_STATUSES.has(task.status)) {
+          stopPolling(taskId)
+          return
+        }
+        schedulePolling(taskId)
       } catch {
-        if (taskList.value.some((task) => task.id === taskId)) schedulePolling(taskId)
+        if (isCurrentPollingGuard(taskId, pollingGuard)
+          && taskList.value.some((task) => task.id === taskId)) {
+          schedulePolling(taskId)
+        }
       }
     }, getPollingInterval())
     pollingTimers.set(taskId, timer)
@@ -498,9 +542,10 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     const normalizedTaskId = taskId.trim()
     const existing = taskList.value.find((task) => task.id === normalizedTaskId)
     if (existing && TERMINAL_TASK_STATUSES.has(existing.status)) {
-      clearPollingTimer(normalizedTaskId)
+      stopPolling(normalizedTaskId)
       return false
     }
+    activePollingTasks.add(normalizedTaskId)
     schedulePolling(normalizedTaskId)
     return true
   }

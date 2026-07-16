@@ -1206,4 +1206,50 @@ describe('useVideoGenerationStore', () => {
     expect(store.taskList).toEqual([{ id: 'task-timeout', status: 'running' }])
     expect(vi.getTimerCount()).toBe(1)
   })
+
+  it('ignores in-flight polling results after clearDraft', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const response = createDeferred()
+    store.taskList = [{ id: 'task-clear-race', status: 'running' }]
+    videoGenerationApi.getVideoGenerationTask.mockReturnValue(response.promise)
+
+    store.startPolling('task-clear-race')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+
+    store.clearDraft()
+    response.resolve({
+      code: 0,
+      data: { id: 'task-clear-race', status: 'running' },
+      msg: 'ok',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.taskList).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ignores in-flight polling results after store disposal', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const response = createDeferred()
+    store.taskList = [{ id: 'task-dispose-race', status: 'running' }]
+    videoGenerationApi.getVideoGenerationTask.mockReturnValue(response.promise)
+
+    store.startPolling('task-dispose-race')
+    await vi.advanceTimersByTimeAsync(3000)
+    store.$dispose()
+    response.resolve({
+      code: 0,
+      data: { id: 'task-dispose-race', status: 'running' },
+      msg: 'ok',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.taskList).toEqual([{ id: 'task-dispose-race', status: 'running' }])
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })
