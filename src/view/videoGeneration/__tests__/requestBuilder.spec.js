@@ -245,4 +245,171 @@ describe('requestBuilder', () => {
       message: '请填写提示词或添加参考内容',
     }])
   })
+
+  it('blocks every canonical media record whose status is not exactly ready', () => {
+    const mediaList = [
+      { ...image1, id: 'status-missing', realIndex: 1, status: undefined },
+      { ...image1, id: 'status-local', realIndex: 2, status: 'local' },
+      { ...image1, id: 'status-uploading', realIndex: 3, status: 'uploading' },
+      { ...image1, id: 'status-error', realIndex: 4, status: 'error' },
+    ]
+    const serialization = serializePrompt({ type: 'doc', content: [{ type: 'paragraph' }] }, mediaList)
+
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    }).map(({ code, mediaId, status }) => ({ code, mediaId, status }))).toEqual([
+      { code: 'MEDIA_NOT_READY', mediaId: 'status-missing', status: undefined },
+      { code: 'MEDIA_NOT_READY', mediaId: 'status-local', status: 'local' },
+      { code: 'MEDIA_NOT_READY', mediaId: 'status-uploading', status: 'uploading' },
+      { code: 'MEDIA_NOT_READY', mediaId: 'status-error', status: 'error' },
+    ])
+  })
+
+  it('derives resolved mention projections only from immutable media records', () => {
+    const staleMentionDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [
+        { type: 'mediaMention', attrs: { mediaId: 'media-2', kind: 'video', sourceLabel: '音频99', realIndex: 99 } },
+        { type: 'text', text: ' 和 ' },
+        { type: 'mediaMention', attrs: { mediaId: 'media-1' } },
+      ] }],
+    }
+
+    expect(serializePrompt(staleMentionDoc, [image1, image2])).toMatchObject({
+      readablePrompt: '@图片2 和 @图片1',
+      templatePrompt: '<<<image_1_2>>> 和 <<<image_2_1>>>',
+      modelPrompt: '【图片 1】 和 【图片 2】',
+      errors: [],
+    })
+  })
+
+  it('emits blocking errors with stable paths for invalid media metadata', () => {
+    const mediaList = [
+      { ...image1, id: 'missing-kind', kind: undefined, realIndex: 1 },
+      { ...image2, id: 'invalid-index', kind: 'image', realIndex: 0 },
+      { ...image2, id: 'missing-index', kind: 'image', realIndex: undefined },
+    ]
+    const serialization = serializePrompt({ type: 'doc', content: [{ type: 'paragraph' }] }, mediaList)
+    const expectedErrors = [
+      {
+        code: 'UNSUPPORTED_MEDIA_KIND',
+        path: 'mediaList[0].kind',
+        mediaId: 'missing-kind',
+        message: '仅支持图片参考素材：missing-kind',
+      },
+      {
+        code: 'INVALID_MEDIA_REAL_INDEX',
+        path: 'mediaList[1].realIndex',
+        mediaId: 'invalid-index',
+        message: '素材 realIndex 必须是正整数：invalid-index',
+      },
+      {
+        code: 'INVALID_MEDIA_REAL_INDEX',
+        path: 'mediaList[2].realIndex',
+        mediaId: 'missing-index',
+        message: '素材 realIndex 必须是正整数：missing-index',
+      },
+    ]
+
+    expect(serialization.errors).toEqual(expectedErrors)
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toEqual(expectedErrors)
+  })
+
+  it.each([
+    ['mentioned', { type: 'doc', content: [{ type: 'paragraph', content: [
+      { type: 'mediaMention', attrs: { mediaId: 'media-1' } },
+    ] }] }],
+    ['unmentioned', { type: 'doc', content: [{ type: 'paragraph' }] }],
+  ])('uses the first duplicate media record when it is %s and blocks submission', (_state, duplicateDoc) => {
+    const duplicate = { ...image1, remoteUrl: 'https://media.example/duplicate.png' }
+    const mediaList = [image1, duplicate]
+    const serialization = serializePrompt(duplicateDoc, mediaList)
+    const expectedError = {
+      code: 'DUPLICATE_MEDIA_ID',
+      path: 'mediaList[1].id',
+      mediaId: 'media-1',
+      message: '素材 ID 重复：media-1',
+    }
+
+    expect(collectCanonicalMedia(duplicateDoc, mediaList)).toEqual([image1])
+    expect(serialization.media).toHaveLength(1)
+    expect(serialization.media[0].url).toBe('https://media.example/xiaodou.png')
+    expect(serialization.errors).toEqual([expectedError])
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toEqual([expectedError])
+  })
+
+  it.each([
+    ['video', '视频'],
+    ['audio', '音频'],
+  ])('never encodes an unsupported %s reference as image_url', (kind, label) => {
+    const media = { ...image1, id: `${kind}-1`, kind, name: `${kind}.mp4`, realIndex: 1 }
+    const mediaDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [
+        { type: 'text', text: '让 ' },
+        { type: 'mediaMention', attrs: { mediaId: media.id } },
+      ] }],
+    }
+    const serialization = serializePrompt(mediaDoc, [media])
+    const request = buildArkRequest({
+      doc: mediaDoc,
+      mediaList: [media],
+      model: 'doubao-seedance-2-0-260128',
+      config: { ratio: 'adaptive', resolution: '720p', duration: 5, generateAudio: false },
+    })
+    const expectedError = {
+      code: 'UNSUPPORTED_MEDIA_KIND',
+      path: 'mediaList[0].kind',
+      mediaId: media.id,
+      message: `仅支持图片参考素材：${media.id}`,
+    }
+
+    expect(serialization).toMatchObject({
+      readablePrompt: `让 @${label}1`,
+      templatePrompt: `让 <<<${kind}_1_1>>>`,
+      modelPrompt: `让 【${label} 1】`,
+      errors: [expectedError],
+    })
+    expect(request.content).toEqual([{ type: 'text', text: `让 【${label} 1】` }])
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toEqual([expectedError])
+  })
+
+  it('treats a whitespace-only API key as missing', () => {
+    const serialization = serializePrompt(doc, [image1, image2])
+
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: '   \n\t' },
+    })).toEqual([{
+      code: 'ARK_API_KEY_MISSING',
+      message: '服务端未配置 ARK_API_KEY',
+    }])
+  })
+
+  it('deduplicates serialization blockers and returns defensive copies', () => {
+    const serialization = serializePrompt(doc, [image1, image2])
+    const error = {
+      code: 'UNSUPPORTED_MEDIA_KIND',
+      path: 'mediaList[0].kind',
+      mediaId: 'media-1',
+      message: '仅支持图片参考素材：media-1',
+    }
+    const blockers = validateRealSubmission({
+      serialization: { ...serialization, errors: [error, { ...error }] },
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })
+
+    expect(blockers).toEqual([error])
+    expect(blockers[0]).not.toBe(error)
+  })
 })

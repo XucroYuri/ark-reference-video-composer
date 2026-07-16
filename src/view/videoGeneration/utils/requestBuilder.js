@@ -35,9 +35,50 @@ function isPublicMediaUrl(url) {
   return /^asset:\/\/[^\s]+$/.test(url) || /^https:\/\/[^\s]+$/.test(url)
 }
 
+function collectMediaMetadataErrors(mediaList) {
+  const errors = []
+  const seenIds = new Set()
+
+  mediaList.forEach((item, index) => {
+    if (seenIds.has(item.id)) {
+      errors.push({
+        code: 'DUPLICATE_MEDIA_ID',
+        path: `mediaList[${index}].id`,
+        mediaId: item.id,
+        message: `素材 ID 重复：${item.id}`,
+      })
+    } else {
+      seenIds.add(item.id)
+    }
+
+    if (item.kind !== 'image') {
+      errors.push({
+        code: 'UNSUPPORTED_MEDIA_KIND',
+        path: `mediaList[${index}].kind`,
+        mediaId: item.id,
+        message: `仅支持图片参考素材：${item.id}`,
+      })
+    }
+
+    if (!Number.isInteger(item.realIndex) || item.realIndex < 1) {
+      errors.push({
+        code: 'INVALID_MEDIA_REAL_INDEX',
+        path: `mediaList[${index}].realIndex`,
+        mediaId: item.id,
+        message: `素材 realIndex 必须是正整数：${item.id}`,
+      })
+    }
+  })
+
+  return errors
+}
+
 export function collectCanonicalMedia(doc, mediaList) {
   const list = Array.isArray(mediaList) ? mediaList : []
-  const byId = new Map(list.map((item) => [item.id, item]))
+  const byId = new Map()
+  for (const item of list) {
+    if (!byId.has(item.id)) byId.set(item.id, item)
+  }
   const ordered = []
   const seen = new Set()
 
@@ -62,7 +103,8 @@ export function collectCanonicalMedia(doc, mediaList) {
 }
 
 export function serializePrompt(doc, mediaList) {
-  const canonicalMedia = collectCanonicalMedia(doc, mediaList)
+  const list = Array.isArray(mediaList) ? mediaList : []
+  const canonicalMedia = collectCanonicalMedia(doc, list)
   const canonicalIndexById = new Map(
     canonicalMedia.map((item, index) => [item.id, index + 1]),
   )
@@ -121,10 +163,10 @@ export function serializePrompt(doc, mediaList) {
       return
     }
 
-    const kind = media.kind || node.attrs?.kind
+    const kind = media.kind
     const token = TOKEN_BY_KIND[kind] || kind
-    const realIndex = media.realIndex ?? node.attrs?.realIndex
-    const sourceLabel = node.attrs?.sourceLabel || `${token}${realIndex}`
+    const realIndex = media.realIndex
+    const sourceLabel = `${token}${realIndex}`
 
     prompts.readablePrompt += `@${sourceLabel}`
     prompts.templatePrompt += `<<<${kind}_${canonicalIndex}_${realIndex}>>>`
@@ -135,11 +177,14 @@ export function serializePrompt(doc, mediaList) {
     ...prompts,
     media: canonicalMedia.map(serializeMedia),
     missingMedia,
-    errors: missingMedia.map((item) => ({
-      code: 'MISSING_MEDIA',
-      mediaId: item.mediaId,
-      message: `引用的素材不存在：${item.sourceLabel}`,
-    })),
+    errors: [
+      ...collectMediaMetadataErrors(list),
+      ...missingMedia.map((item) => ({
+        code: 'MISSING_MEDIA',
+        mediaId: item.mediaId,
+        message: `引用的素材不存在：${item.sourceLabel}`,
+      })),
+    ],
   }
 }
 
@@ -150,7 +195,7 @@ export function buildArkRequest({ doc, mediaList, config, model }) {
     model,
     content: [
       { type: 'text', text: serialization.modelPrompt },
-      ...serialization.media.map((item) => ({
+      ...serialization.media.filter((item) => item.kind === 'image').map((item) => ({
         type: 'image_url',
         role: 'reference_image',
         image_url: { url: item.url },
@@ -165,33 +210,58 @@ export function buildArkRequest({ doc, mediaList, config, model }) {
 
 export function validateRealSubmission({ serialization, runtime }) {
   const blockers = []
+  const blockerKeys = new Set()
+  const addBlocker = (blocker) => {
+    if (!blocker || typeof blocker.code !== 'string') return
+
+    const copy = { ...blocker }
+    const key = JSON.stringify([
+      copy.code,
+      copy.path || '',
+      copy.mediaId || '',
+      copy.status ?? '',
+    ])
+    if (blockerKeys.has(key)) return
+
+    blockerKeys.add(key)
+    blockers.push(copy)
+  }
 
   if (!runtime?.realGenerationEnabled) {
-    blockers.push({
+    addBlocker({
       code: 'REAL_GENERATION_DISABLED',
       message: '真实生成未启用',
     })
   }
 
-  if (!runtime?.arkApiKey) {
-    blockers.push({
+  if (typeof runtime?.arkApiKey !== 'string' || !runtime.arkApiKey.trim()) {
+    addBlocker({
       code: 'ARK_API_KEY_MISSING',
       message: '服务端未配置 ARK_API_KEY',
     })
   }
 
   if (!serialization?.modelPrompt?.trim() && !(serialization?.media?.length > 0)) {
-    blockers.push({
+    addBlocker({
       code: 'EMPTY_CONTENT',
       message: '请填写提示词或添加参考内容',
     })
   }
 
-  blockers.push(...(serialization?.errors || []))
+  for (const error of serialization?.errors || []) addBlocker(error)
 
   for (const item of serialization?.media || []) {
+    if (item.status !== 'ready') {
+      addBlocker({
+        code: 'MEDIA_NOT_READY',
+        mediaId: item.id,
+        status: item.status,
+        message: `参考素材尚未就绪：${item.name || item.id}`,
+      })
+    }
+
     if (item.notPublic || !isPublicMediaUrl(item.url)) {
-      blockers.push({
+      addBlocker({
         code: 'MEDIA_NOT_PUBLIC',
         mediaId: item.id,
         message: `参考素材不是可公开访问的 HTTPS URL 或 Ark 资产：${item.name || item.id}`,
