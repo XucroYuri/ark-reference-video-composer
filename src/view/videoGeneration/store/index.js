@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { reactive, ref, watch } from 'vue'
+import { onScopeDispose, reactive, ref, watch } from 'vue'
 
 import {
   createVideoGenerationTask,
@@ -33,6 +33,9 @@ const CONFIG_VALIDATORS = {
   generateAudio: (value) => typeof value === 'boolean',
 }
 const TASK_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
+const VISIBLE_POLL_INTERVAL_MS = 3000
+const HIDDEN_POLL_INTERVAL_MS = 10000
 
 export class VideoGenerationStoreError extends Error {
   constructor(code, message, details = {}) {
@@ -154,6 +157,7 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   let activeUploadOperation = null
   let activeRemovalOperation = null
   let activeSubmissionOperation = null
+  const pollingTimers = new Map()
 
   function invalidateDryRun() {
     dryRunResult.value = null
@@ -447,6 +451,71 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     return taskList.value[index]
   }
 
+  function getPollingInterval() {
+    return document.visibilityState === 'hidden'
+      ? HIDDEN_POLL_INTERVAL_MS
+      : VISIBLE_POLL_INTERVAL_MS
+  }
+
+  function clearPollingTimer(taskId) {
+    const timer = pollingTimers.get(taskId)
+    if (timer) clearTimeout(timer)
+    pollingTimers.delete(taskId)
+  }
+
+  function stopPolling(taskId) {
+    if (typeof taskId === 'string' && taskId.trim()) {
+      clearPollingTimer(taskId)
+      return
+    }
+    for (const id of pollingTimers.keys()) clearPollingTimer(id)
+  }
+
+  function schedulePolling(taskId) {
+    clearPollingTimer(taskId)
+    const timer = setTimeout(async () => {
+      pollingTimers.delete(taskId)
+      try {
+        const task = await pollTask(taskId)
+        if (!TERMINAL_TASK_STATUSES.has(task.status)) schedulePolling(taskId)
+      } catch {
+        if (taskList.value.some((task) => task.id === taskId)) schedulePolling(taskId)
+      }
+    }, getPollingInterval())
+    pollingTimers.set(taskId, timer)
+  }
+
+  function startPolling(taskId) {
+    if (typeof taskId !== 'string' || !taskId.trim()) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_INVALID_TASK_ID',
+        '任务 ID 无效',
+      )
+    }
+    const normalizedTaskId = taskId.trim()
+    const existing = taskList.value.find((task) => task.id === normalizedTaskId)
+    if (existing && TERMINAL_TASK_STATUSES.has(existing.status)) {
+      clearPollingTimer(normalizedTaskId)
+      return false
+    }
+    schedulePolling(normalizedTaskId)
+    return true
+  }
+
+  function resumeTask(taskId) {
+    if (typeof taskId !== 'string' || !taskId.trim()) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_INVALID_TASK_ID',
+        '任务 ID 无效',
+      )
+    }
+    const normalizedTaskId = taskId.trim()
+    if (!taskList.value.some((task) => task.id === normalizedTaskId)) {
+      taskList.value.push({ id: normalizedTaskId, status: 'queued' })
+    }
+    return startPolling(normalizedTaskId)
+  }
+
   function clearDraft() {
     lifecycleEpoch += 1
     activeUploadOperation = null
@@ -457,11 +526,14 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     Object.assign(config, createDefaultConfig())
     dryRunResult.value = null
     taskList.value = []
+    stopPolling()
     uploadPending.value = false
     removePending.value = false
     submitPending.value = false
     nextRealIndex = 1
   }
+
+  onScopeDispose(() => stopPolling())
 
   return {
     mediaList,
@@ -478,6 +550,9 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     runDryRun,
     confirmRealGeneration,
     pollTask,
+    resumeTask,
+    startPolling,
+    stopPolling,
     setEditorDoc,
     setConfig,
     clearDraft,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import * as videoGenerationApi from '@/api/videoGeneration'
@@ -93,6 +93,11 @@ describe('useVideoGenerationStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.resetAllMocks()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   it('uses source-compatible default generation options', () => {
@@ -1080,5 +1085,97 @@ describe('useVideoGenerationStore', () => {
       status: 'succeeded',
       content: { video_url: 'https://cdn.example.test/result/video.mp4' },
     })
+  })
+
+  it('polls active tasks every three seconds', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'task-interval', status: 'queued' }]
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: 'task-interval', status: 'running' },
+      msg: 'ok',
+    })
+
+    expect(store.startPolling('task-interval')).toBe(true)
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(videoGenerationApi.getVideoGenerationTask).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledWith({
+      taskId: 'task-interval',
+    })
+  })
+
+  it('polls every ten seconds while document.visibilityState is hidden', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'task-hidden', status: 'queued' }]
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: 'task-hidden', status: 'running' },
+      msg: 'ok',
+    })
+
+    store.startPolling('task-hidden')
+    await vi.advanceTimersByTimeAsync(9999)
+    expect(videoGenerationApi.getVideoGenerationTask).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops polling succeeded, failed, and cancelled tasks', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'task-terminal', status: 'running' }]
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: {
+        id: 'task-terminal',
+        status: 'succeeded',
+        content: { video_url: 'https://cdn.example.test/task-terminal.mp4' },
+      },
+      msg: 'ok',
+    })
+
+    store.startPolling('task-terminal')
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(store.taskList[0].status).toBe('succeeded')
+    expect(vi.getTimerCount()).toBe(0)
+    for (const status of ['succeeded', 'failed', 'cancelled']) {
+      store.taskList = [{ id: `task-${status}`, status }]
+      expect(store.startPolling(`task-${status}`)).toBe(false)
+    }
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not recreate a task after query failure', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    videoGenerationApi.getVideoGenerationTask.mockRejectedValue(new Error('timeout'))
+
+    store.startPolling('unknown-task')
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.taskList).toEqual([])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains task IDs when polling times out', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'task-timeout', status: 'running' }]
+    videoGenerationApi.getVideoGenerationTask.mockRejectedValue(new Error('timeout'))
+
+    store.startPolling('task-timeout')
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(store.taskList).toEqual([{ id: 'task-timeout', status: 'running' }])
+    expect(vi.getTimerCount()).toBe(1)
   })
 })
