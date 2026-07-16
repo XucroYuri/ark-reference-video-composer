@@ -61,6 +61,43 @@ const editor = new Editor({
   onBlur: () => emit('blur'),
 })
 
+function closeSuggestionState() {
+  Object.assign(suggestionState, {
+    open: false,
+    items: [],
+    selectedIndex: 0,
+    clientRect: null,
+    command: null,
+  })
+}
+
+function isEditorMutable() {
+  return !props.disabled && !editor.isDestroyed && editor.isEditable
+}
+
+function pruneStaleMentions() {
+  if (editor.isDestroyed) return false
+  const removals = []
+  editor.state.doc.descendants((node, position) => {
+    if (node.type.name === 'mediaMention'
+      && !isCurrentMediaMention(node.attrs, props.mediaList)) {
+      removals.push({ from: position, to: position + node.nodeSize })
+    }
+  })
+  if (!removals.length) return false
+
+  const transaction = removals
+    .sort((left, right) => right.from - left.from)
+    .reduce(
+      (current, range) => current.delete(range.from, range.to),
+      editor.state.tr,
+    )
+  editor.view.dispatch(transaction)
+  return true
+}
+
+pruneStaleMentions()
+
 const menuStyle = computed(() => {
   const anchor = suggestionState.clientRect?.()
   const rootRect = rootElement.value?.getBoundingClientRect?.()
@@ -72,7 +109,11 @@ const menuStyle = computed(() => {
 })
 
 function selectSuggestion(item) {
-  suggestionState.command?.(item)
+  if (!isEditorMutable()) {
+    closeSuggestionState()
+    return false
+  }
+  return suggestionState.command?.(item) === true
 }
 
 watch(
@@ -86,6 +127,7 @@ watch(
     } finally {
       applyingExternal = false
     }
+    pruneStaleMentions()
   },
   { deep: true },
 )
@@ -94,40 +136,23 @@ watch(
   () => props.disabled,
   (disabled) => {
     if (!editor.isDestroyed) editor.setEditable(!disabled)
+    if (disabled) closeSuggestionState()
   },
 )
 
 watch(
   () => props.mediaList,
-  (mediaList) => {
-    if (editor.isDestroyed) return
-    const removals = []
-    editor.state.doc.descendants((node, position) => {
-      if (node.type.name === 'mediaMention'
-        && !isCurrentMediaMention(node.attrs, mediaList)) {
-        removals.push({ from: position, to: position + node.nodeSize })
-      }
-    })
-    if (!removals.length) return
-
-    const transaction = removals
-      .sort((left, right) => right.from - left.from)
-      .reduce(
-        (current, range) => current.delete(range.from, range.to),
-        editor.state.tr,
-      )
-    editor.view.dispatch(transaction)
-  },
+  () => pruneStaleMentions(),
   { deep: true },
 )
 
 function focus() {
-  if (props.disabled || editor.isDestroyed) return false
+  if (!isEditorMutable()) return false
   return editor.commands.focus()
 }
 
 function insertMedia(media) {
-  if (props.disabled || editor.isDestroyed) return false
+  if (!isEditorMutable()) return false
   const item = getMediaSuggestionItems(props.mediaList)
     .find((candidate) => candidate.mediaId === media?.id && !candidate.disabled)
   if (!item) return false
@@ -144,7 +169,7 @@ function insertMedia(media) {
 }
 
 function clear() {
-  if (editor.isDestroyed) return false
+  if (!isEditorMutable()) return false
   return editor.commands.clearContent(true)
 }
 

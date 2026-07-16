@@ -99,8 +99,7 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
     const items = Array.isArray(currentProps.items) ? currentProps.items : []
     const command = (item) => {
       if (!isSelectableSuggestionItem(item) || dismissed || !currentProps) return false
-      currentProps.command(item)
-      return true
+      return currentProps.command(item) !== false
     }
     onStateChange({
       open: true,
@@ -143,8 +142,7 @@ export function createMediaSuggestionRenderer(onStateChange = () => {}) {
 
       const item = currentProps.items[selectedIndex]
       if (!isSelectableSuggestionItem(item)) return false
-      currentProps.command(item)
-      return true
+      return currentProps.command(item) !== false
     },
     onExit() {
       currentProps = null
@@ -168,6 +166,7 @@ export function createMediaSuggestion({ getItems, onStateChange } = {}) {
         char: '@',
         items: ({ query }) => getMediaSuggestionItems(readMedia(), query),
         command: ({ editor, range, props }) => {
+          if (!editor || editor.isDestroyed || !editor.isEditable) return false
           if (!isSelectableSuggestionItem(props)) return false
           const currentItem = getMediaSuggestionItems(readMedia()).find((item) => (
             isSelectableSuggestionItem(item)

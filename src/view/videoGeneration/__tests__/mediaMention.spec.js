@@ -15,6 +15,7 @@ import {
   sanitizeMediaMentionSlice,
 } from '../editor/mediaMention'
 import {
+  createMediaSuggestion,
   createMediaSuggestionRenderer,
   getMediaSuggestionItems,
 } from '../editor/mediaSuggestion'
@@ -308,6 +309,42 @@ describe('createMediaSuggestionRenderer', () => {
   })
 })
 
+describe('createMediaSuggestion', () => {
+  const readyImage = {
+    id: 'm1',
+    kind: 'image',
+    status: 'ready',
+    realIndex: 1,
+    previewUrl: '/uploads/m1.png',
+  }
+
+  it('keeps stale suggestion commands inert after the editor becomes non-editable', async () => {
+    let state
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        MediaMention,
+        createMediaSuggestion({
+          getItems: () => [readyImage],
+          onStateChange: (next) => { state = next },
+        }),
+      ],
+      content: { type: 'doc', content: [{ type: 'paragraph' }] },
+    })
+
+    editor.commands.insertContent('@')
+    await Promise.resolve()
+    expect(state.open).toBe(true)
+    const staleCommand = state.command
+    const staleItem = state.items[0]
+
+    editor.setEditable(false)
+    expect(staleCommand(staleItem)).toBe(false)
+    expect(editor.getJSON().content[0].content).toEqual([{ type: 'text', text: '@' }])
+    editor.destroy()
+  })
+})
+
 describe('PromptComposer', () => {
   const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] }
   const readyImage = {
@@ -378,6 +415,25 @@ describe('PromptComposer', () => {
     wrapper.unmount()
   })
 
+  it('does not clear content or emit changes while disabled', async () => {
+    const initial = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '保留提示' }] }],
+    }
+    const wrapper = mount(PromptComposer, {
+      props: { modelValue: initial, disabled: true },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    expect(wrapper.vm.clear()).toBe(false)
+    await nextTick()
+
+    expect(wrapper.find('.ProseMirror').text()).toBe('保留提示')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('opens the source-compatible menu and inserts the active suggestion by keyboard', async () => {
     const wrapper = mount(PromptComposer, {
       props: { modelValue: emptyDoc, mediaList: [readyImage] },
@@ -401,6 +457,103 @@ describe('PromptComposer', () => {
       attrs: { mediaId: 'm1', sourceLabel: '图片1', realIndex: 1 },
     })
     expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('closes an open suggestion menu when disabled and ignores the stale selection', async () => {
+    const wrapper = mount(PromptComposer, {
+      props: { modelValue: emptyDoc, mediaList: [readyImage] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    const editor = wrapper.findComponent({ name: 'EditorContent' }).props('editor')
+
+    editor.commands.insertContent('@')
+    await Promise.resolve()
+    await nextTick()
+
+    const menu = wrapper.findComponent(MediaSuggestionMenu)
+    const staleItem = menu.props('items')[0]
+    const updatesBeforeDisabling = wrapper.emitted('update:modelValue')?.length ?? 0
+
+    await wrapper.setProps({ disabled: true })
+    await nextTick()
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false)
+
+    menu.vm.$emit('select', staleItem)
+    await nextTick()
+
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(updatesBeforeDisabling)
+    expect(editor.getJSON().content[0].content).toEqual([{ type: 'text', text: '@' }])
+    wrapper.unmount()
+  })
+
+  it('prunes stale mentions from initial content against the current media list', async () => {
+    const initial = {
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [
+          { type: 'mediaMention', attrs: { mediaId: 'stale', kind: 'image', sourceLabel: '图片9', realIndex: 9 } },
+          { type: 'text', text: ' 和 ' },
+          { type: 'mediaMention', attrs: { mediaId: 'm1', kind: 'image', sourceLabel: '图片1', realIndex: 1 } },
+        ],
+      }],
+    }
+    const wrapper = mount(PromptComposer, {
+      props: { modelValue: initial, mediaList: [readyImage] },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const emitted = wrapper.emitted('update:modelValue')
+    expect(emitted.at(-1)[0].content[0].content).toEqual([
+      { type: 'text', text: ' 和 ' },
+      {
+        type: 'mediaMention',
+        attrs: { mediaId: 'm1', kind: 'image', sourceLabel: '图片1', realIndex: 1 },
+      },
+    ])
+    expect(wrapper.find('.ProseMirror').element.textContent).toBe(' 和 @图片1')
+    wrapper.unmount()
+  })
+
+  it('prunes stale mentions from external model updates without echoing valid updates', async () => {
+    const wrapper = mount(PromptComposer, {
+      props: { modelValue: emptyDoc, mediaList: [readyImage] },
+      attachTo: document.body,
+    })
+    await nextTick()
+
+    const validExternal = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '外部有效更新' }] }],
+    }
+    await wrapper.setProps({ modelValue: validExternal })
+    await nextTick()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    const staleExternal = {
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '保留 ' },
+          { type: 'mediaMention', attrs: { mediaId: 'removed', kind: 'image', sourceLabel: '图片2', realIndex: 2 } },
+          { type: 'mediaMention', attrs: { mediaId: 'm1', kind: 'image', sourceLabel: '伪造标签', realIndex: 1 } },
+        ],
+      }],
+    }
+    await wrapper.setProps({ modelValue: staleExternal })
+    await nextTick()
+
+    const emitted = wrapper.emitted('update:modelValue')
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0][0]).toEqual({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '保留 ' }] }],
+    })
+    expect(wrapper.find('.ProseMirror').element.textContent).toBe('保留 ')
     wrapper.unmount()
   })
 
