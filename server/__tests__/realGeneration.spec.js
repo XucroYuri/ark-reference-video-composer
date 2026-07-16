@@ -451,18 +451,45 @@ describe('Ark client', () => {
     expect(exposed).toContain('[REDACTED]')
   })
 
-  it('recursively sanitizes successful create, get, and delete responses', async () => {
+  it('omits every sensitive success field and unsafe property name recursively', async () => {
     const signedUrl = 'https://cdn.example.test/video.mp4?X-Signature=keep-me&Expires=999'
+    const rawSecrets = [
+      'raw-token-value',
+      'raw-refresh-token-value',
+      'raw-secret-value',
+      'raw-secret-key-value',
+      'Bearer response-private-token',
+      'Bearer proxy-private-token',
+      'raw-password-value',
+      'raw-credential-value',
+      'raw-api-key-value',
+      'raw-api-underscore-value',
+      'raw-access-key-value',
+      'raw-access-key-id-value',
+      'raw-property-name-value',
+      'raw-bearer-property-value',
+    ]
     const success = (extra) => new Response(JSON.stringify({
       ...extra,
       status: 'running',
       output_url: signedUrl,
-      authorization: 'Bearer response-private-token',
+      token: rawSecrets[0],
+      refresh_token: rawSecrets[1],
+      secret: rawSecrets[2],
+      secret_key: rawSecrets[3],
+      authorization: rawSecrets[4],
+      proxy_authorization: rawSecrets[5],
+      password: rawSecrets[6],
+      credential: rawSecrets[7],
+      apiKey: rawSecrets[8],
+      api_key: rawSecrets[9],
+      accessKey: rawSecrets[10],
+      access_key_id: rawSecrets[11],
+      'prefix-secret-test-key-suffix': rawSecrets[12],
+      'Bearer unsafe-property-token': rawSecrets[13],
       nested: {
-        apiKey: 'secret-test-key',
-        api_key: 'another-private-value',
-        secret: 'private-secret-value',
         note: 'echo secret-test-key and Bearer nested-private-token',
+        safe: 'preserved',
       },
     }), {
       status: 200,
@@ -489,16 +516,33 @@ describe('Ark client', () => {
         id: 'task-1',
         status: 'running',
         output_url: signedUrl,
-        authorization: '[REDACTED]',
         nested: {
-          apiKey: '[REDACTED]',
-          api_key: '[REDACTED]',
-          secret: '[REDACTED]',
           note: 'echo [REDACTED] and Bearer [REDACTED]',
+          safe: 'preserved',
         },
       })
-      expect(JSON.stringify(result)).not.toContain('secret-test-key')
-      expect(JSON.stringify(result)).not.toContain('nested-private-token')
+      for (const key of [
+        'token',
+        'refresh_token',
+        'secret',
+        'secret_key',
+        'authorization',
+        'proxy_authorization',
+        'password',
+        'credential',
+        'apiKey',
+        'api_key',
+        'accessKey',
+        'access_key_id',
+        'prefix-secret-test-key-suffix',
+        'Bearer unsafe-property-token',
+      ]) {
+        expect(result).not.toHaveProperty(key)
+      }
+      const serialized = JSON.stringify(result)
+      expect(serialized).not.toContain('secret-test-key')
+      expect(serialized).not.toContain('nested-private-token')
+      for (const rawSecret of rawSecrets) expect(serialized).not.toContain(rawSecret)
     }
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })

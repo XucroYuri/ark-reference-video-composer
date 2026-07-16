@@ -105,20 +105,24 @@ export function createArkClient({
     return redacted.slice(0, maxLength)
   }
   const isSensitiveKey = (key) => {
+    if (normalizedApiKey && key.includes(normalizedApiKey)) return true
+    if (/Bearer\s+[^\s"'<>]+/i.test(key)) return true
     const normalized = key.toLowerCase().replace(/[_\s-]/g, '')
-    return normalized === 'authorization'
+    return normalized.endsWith('token')
+      || normalized.includes('secret')
+      || normalized.endsWith('authorization')
+      || normalized.includes('password')
+      || normalized.includes('credential')
       || normalized.includes('apikey')
-      || normalized.endsWith('secret')
       || normalized.includes('accesskey')
   }
   const sanitizeResponse = (value) => {
     if (typeof value === 'string') return redactSensitive(value, Infinity)
     if (Array.isArray(value)) return value.map(sanitizeResponse)
     if (!value || typeof value !== 'object') return value
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      isSensitiveKey(key) ? '[REDACTED]' : sanitizeResponse(child),
-    ]))
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !isSensitiveKey(key))
+      .map(([key, child]) => [key, sanitizeResponse(child)]))
   }
 
   const request = async (path, { method, body }) => {
