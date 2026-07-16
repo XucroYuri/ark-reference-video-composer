@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import { Router } from 'express'
 import multer from 'multer'
 
@@ -15,10 +17,45 @@ export const fail = (res, code, msg, data = {}, status = 400) => (
 )
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 const RATIOS = new Set(['adaptive', '16:9', '9:16', '1:1'])
 const RESOLUTIONS = new Set(['720p', '1080p'])
 const DURATIONS = new Set([5, 10])
 const COUNTS = new Set([1, 2, 3, 4])
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableStringify(value[key])}`
+    )).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function createConfirmationHash(request, count) {
+  return createHash('sha256')
+    .update(stableStringify({ count, request, version: 1 }))
+    .digest('hex')
+}
+
+function normalizeArkError(error, apiKey) {
+  const redact = (value, maxLength) => {
+    let result = String(value ?? '').replace(
+      /Bearer\s+[^\s"'<>]+/gi,
+      'Bearer [REDACTED]',
+    )
+    const normalizedKey = typeof apiKey === 'string' ? apiKey.trim() : ''
+    if (normalizedKey) result = result.split(normalizedKey).join('[REDACTED]')
+    return result.slice(0, maxLength)
+  }
+  return {
+    status: Number.isInteger(error?.status) ? error.status : 502,
+    code: redact(error?.code || 'ARK_REQUEST_FAILED', 120),
+    message: redact(error?.message || 'Ark 请求失败', 500),
+    requestId: redact(error?.requestId || '', 200),
+  }
+}
 
 function validateGenerationConfig(value) {
   const errors = []
@@ -149,7 +186,40 @@ async function resolveAuthoritativeMedia(mediaList, mediaStore) {
   return { mediaList: resolved }
 }
 
-export function createVideoGenerationRouter({ config, arkClient, mediaStore }) {
+async function prepareSubmission(body, config, mediaStore) {
+  const validatedConfig = validateGenerationConfig(body.config)
+  if (validatedConfig.error) return validatedConfig
+
+  const validatedDoc = validateEditorDoc(body.doc)
+  if (validatedDoc.error) return validatedDoc
+
+  const authoritative = await resolveAuthoritativeMedia(body.mediaList, mediaStore)
+  if (authoritative.error) return authoritative
+
+  const serialization = serializePrompt(validatedDoc.doc, authoritative.mediaList)
+  const request = buildArkRequest({
+    doc: validatedDoc.doc,
+    mediaList: authoritative.mediaList,
+    config: validatedConfig.config,
+    model: config.arkModel,
+  })
+  return {
+    config: validatedConfig.config,
+    doc: validatedDoc.doc,
+    mediaList: authoritative.mediaList,
+    serialization,
+    request,
+    blockers: validateRealSubmission({ serialization, runtime: config }),
+    confirmationHash: createConfirmationHash(request, validatedConfig.config.count),
+  }
+}
+
+export function createVideoGenerationRouter({
+  config,
+  arkClient,
+  mediaStore,
+  confirmationStore,
+}) {
   const router = Router()
   const maxUploadBytes = Number.isInteger(config.maxUploadBytes) && config.maxUploadBytes > 0
     ? config.maxUploadBytes
@@ -192,39 +262,107 @@ export function createVideoGenerationRouter({ config, arkClient, mediaStore }) {
   router.post('/dryRun', async (req, res, next) => {
     const body = req.body || {}
     try {
-      const validatedConfig = validateGenerationConfig(body.config)
-      if (validatedConfig.error) {
-        return fail(res, 40006, 'Dry-run 请求参数无效', validatedConfig.error)
+      const prepared = await prepareSubmission(body, config, mediaStore)
+      if (prepared.error) {
+        return fail(res, 40006, 'Dry-run 请求参数无效', prepared.error)
       }
-      const validatedDoc = validateEditorDoc(body.doc)
-      if (validatedDoc.error) {
-        return fail(res, 40006, 'Dry-run 请求参数无效', validatedDoc.error)
-      }
-      const authoritative = await resolveAuthoritativeMedia(body.mediaList, mediaStore)
-      if (authoritative.error) {
-        return fail(res, 40006, 'Dry-run 请求参数无效', authoritative.error)
-      }
-      const serialization = serializePrompt(validatedDoc.doc, authoritative.mediaList)
-      const request = buildArkRequest({
-        doc: validatedDoc.doc,
-        mediaList: authoritative.mediaList,
-        config: validatedConfig.config,
-        model: config.arkModel,
-      })
-      const blockers = validateRealSubmission({ serialization, runtime: config })
 
       // Keep this dependency visible for Task 5. Dry-run never invokes Ark.
       void arkClient
+      void confirmationStore
 
       return ok(res, {
-        serialization,
-        request,
-        blockers,
-        realReady: blockers.length === 0,
-        confirmationToken: '',
+        serialization: prepared.serialization,
+        request: prepared.request,
+        blockers: prepared.blockers,
+        realReady: prepared.blockers.length === 0,
+        confirmationToken: prepared.blockers.length === 0
+          ? confirmationStore?.issue(prepared.confirmationHash) || ''
+          : '',
       }, 'Dry-run 校验成功')
     } catch (error) {
       return next(error)
+    }
+  })
+
+  router.post('/createTask', async (req, res, next) => {
+    try {
+      const prepared = await prepareSubmission(req.body || {}, config, mediaStore)
+      if (prepared.error) {
+        return fail(res, 40007, '真实生成请求参数无效', prepared.error)
+      }
+      if (prepared.blockers.length > 0) {
+        return fail(
+          res,
+          40301,
+          '真实生成条件不满足',
+          { blockers: prepared.blockers },
+          403,
+        )
+      }
+      const confirmed = confirmationStore?.consume(
+        req.body?.confirmationToken,
+        prepared.confirmationHash,
+      )
+      if (!confirmed) return fail(res, 40901, '确认凭证无效或已过期', {}, 409)
+
+      const taskIds = []
+      for (let index = 0; index < prepared.config.count; index += 1) {
+        try {
+          const task = await arkClient.createTask(prepared.request)
+          const taskId = task?.id || task?.task_id
+          if (typeof taskId !== 'string' || !taskId) {
+            throw {
+              status: 502,
+              code: 'ARK_INVALID_RESPONSE',
+              message: 'Ark 创建任务响应缺少任务 ID',
+              requestId: '',
+            }
+          }
+          taskIds.push(taskId)
+        } catch (error) {
+          return fail(res, 50201, 'Ark 创建任务失败', {
+            taskIds,
+            error: normalizeArkError(error, config.arkApiKey),
+          }, 502)
+        }
+      }
+      return ok(res, {
+        taskIds,
+        count: taskIds.length,
+      }, '视频生成任务已创建')
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  router.get('/getTask', async (req, res) => {
+    try {
+      const taskId = req.query.taskId
+      if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
+        return fail(res, 40008, '任务 ID 格式无效', { reason: 'INVALID_TASK_ID' })
+      }
+      const task = await arkClient.getTask(taskId)
+      return ok(res, task, '任务状态查询成功')
+    } catch (error) {
+      return fail(res, 50202, 'Ark 任务查询失败', {
+        error: normalizeArkError(error, config.arkApiKey),
+      }, 502)
+    }
+  })
+
+  router.post('/deleteTask', async (req, res) => {
+    try {
+      const taskId = req.body?.taskId
+      if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) {
+        return fail(res, 40008, '任务 ID 格式无效', { reason: 'INVALID_TASK_ID' })
+      }
+      const task = await arkClient.deleteTask(taskId)
+      return ok(res, task, '任务删除成功')
+    } catch (error) {
+      return fail(res, 50203, 'Ark 任务删除失败', {
+        error: normalizeArkError(error, config.arkApiKey),
+      }, 502)
     }
   })
 
