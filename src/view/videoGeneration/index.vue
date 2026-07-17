@@ -1,6 +1,8 @@
 <template>
   <main class="video-generation-page">
-    <h1 class="video-generation-title">体验视频生成，让创意摇动</h1>
+    <h1 class="video-generation-title">
+      体验视频生成，让创意摇动
+    </h1>
 
     <section class="ark-composer-shell">
       <div class="ark-composer-input-row">
@@ -13,8 +15,14 @@
           @remove="requestRemoveMedia"
         />
 
-        <div class="ark-composer-prompt" @click="composerRef?.focus()">
-          <p v-if="isEditorEmpty" class="ark-composer-placeholder">
+        <div
+          class="ark-composer-prompt"
+          @click="composerRef?.focus()"
+        >
+          <p
+            v-if="isEditorEmpty"
+            class="ark-composer-placeholder"
+          >
             使用 <kbd>@</kbd> 可快速引用上传的文件，如：参考@视频1 中的动作，生成@图片2 和@图片3 中的角色打斗的视频。
           </p>
           <PromptComposer
@@ -67,7 +75,11 @@
       </div>
     </section>
 
-    <p v-if="taskActionError" data-testid="task-action-error" role="alert">
+    <p
+      v-if="taskActionError"
+      data-testid="task-action-error"
+      role="alert"
+    >
       {{ taskActionError }}
     </p>
     <GenerationTaskPanel
@@ -85,7 +97,7 @@
       :result="store.dryRunResult"
       :config="store.config"
       :pending="store.submitPending"
-      @confirm-real="store.confirmRealGeneration"
+      @confirm-real="confirmRealGeneration"
     />
   </main>
 </template>
@@ -100,6 +112,7 @@ import PromptComposer from './components/PromptComposer.vue'
 import ReferenceMediaPanel from './components/ReferenceMediaPanel.vue'
 import RequestPreviewDrawer from './components/RequestPreviewDrawer.vue'
 import { useVideoGenerationStore } from './store'
+import { formatGenerationFailure } from './utils/generationFailure.js'
 import './styles/index.scss'
 
 const store = useVideoGenerationStore()
@@ -141,8 +154,19 @@ function insertFirstReadyMedia() {
 
 async function submitDryRun() {
   if (!canSubmit.value || store.submitPending) return
+  taskActionError.value = ''
   await store.runDryRun()
   previewOpen.value = true
+}
+
+async function confirmRealGeneration(token) {
+  taskActionError.value = ''
+  try {
+    await store.confirmRealGeneration(token)
+  } catch (error) {
+    previewOpen.value = false
+    taskActionError.value = formatGenerationFailure(error)
+  }
 }
 
 function clearAll() {

@@ -348,11 +348,12 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     const existing = new Set(taskList.value.map((task) => task.id))
     const recorded = []
     for (const value of taskIds) {
-      const id = typeof value === 'string' ? value.trim() : ''
-      if (!id || existing.has(id)) continue
-      existing.add(id)
-      taskList.value.push({ id, status: 'queued' })
-      recorded.push(id)
+      if (typeof value !== 'string'
+        || !TASK_ID_PATTERN.test(value)
+        || existing.has(value)) continue
+      existing.add(value)
+      taskList.value.push({ id: value, status: 'queued' })
+      recorded.push(value)
     }
     if (recorded.length) taskMutationEpoch += 1
     return recorded

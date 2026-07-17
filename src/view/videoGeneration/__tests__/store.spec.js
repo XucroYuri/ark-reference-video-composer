@@ -1026,6 +1026,53 @@ describe('useVideoGenerationStore', () => {
     expect(store.submitPending).toBe(false)
   })
 
+  it('recovers and polls only exact valid task IDs from a rejected creation envelope', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const validTaskId = 'cgt-valid_partial:01'
+    const oversizedTaskId = `cgt-${'a'.repeat(253)}`
+    store.dryRunResult = { confirmationToken: 'mixed-task-id-token', realReady: true }
+    videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
+      code: 50201,
+      data: {
+        taskIds: [
+          validTaskId,
+          validTaskId,
+          ' cgt-whitespace-only ',
+          'cgt/invalid-path',
+          'cgt?invalid-query',
+          'cgt-\u0000invalid-control',
+          oversizedTaskId,
+          42,
+          null,
+          { id: 'cgt-object' },
+        ],
+        error: { status: 429, code: 'RateLimitExceeded' },
+      },
+      msg: 'Ark 创建任务失败',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: validTaskId, status: 'running' },
+      msg: 'ok',
+    })
+
+    await expect(store.confirmRealGeneration('mixed-task-id-token')).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+
+    expect(store.taskList).toEqual([{ id: validTaskId, status: 'queued' }])
+    expect(videoGenerationApi.getVideoGenerationTask).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledWith({
+      taskId: validTaskId,
+    })
+    expect(store.taskList).toEqual([{ id: validTaskId, status: 'running' }])
+  })
+
   it('retains partial paid task IDs from an Axios-rejected server envelope', async () => {
     const store = useVideoGenerationStore()
     store.dryRunResult = { confirmationToken: 'single-use-token', realReady: true }

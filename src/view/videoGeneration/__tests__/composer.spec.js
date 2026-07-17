@@ -11,7 +11,7 @@ import GenerationOptionsBar from '../components/GenerationOptionsBar.vue'
 import GenerationTaskPanel from '../components/GenerationTaskPanel.vue'
 import RemoteReferenceForm from '../components/RemoteReferenceForm.vue'
 import TaskHistoryFilters from '../components/TaskHistoryFilters.vue'
-import { useVideoGenerationStore } from '../store'
+import { VideoGenerationStoreError, useVideoGenerationStore } from '../store'
 import * as videoGenerationApi from '@/api/videoGeneration'
 
 vi.mock('@/api/videoGeneration', () => ({
@@ -77,6 +77,18 @@ const dryRunEnvelope = {
   },
   msg: 'Dry-run 校验成功',
 }
+const realReadyDryRunEnvelope = {
+  ...dryRunEnvelope,
+  data: {
+    ...dryRunEnvelope.data,
+    realReady: true,
+    confirmationToken: 'current-confirmation-token',
+    blockers: [],
+  },
+}
+const LOCAL_CONFIRMATION_FAILURE = '确认凭证无效或已过期，请重新运行 Dry-run。'
+const ARK_CREATION_FAILURE = 'Ark 创建任务失败，请检查模型权限、账户余额或资源包。'
+const GENERIC_CREATION_FAILURE = '创建视频任务失败，请稍后重试。'
 
 async function flush() {
   await Promise.resolve()
@@ -117,6 +129,56 @@ async function uploadReference(wrapper) {
   await upload.props('onChange')({ raw: file, name: file.name })
   await flush()
   await flush()
+}
+
+async function renderRealFailure(response) {
+  videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(realReadyDryRunEnvelope)
+  videoGenerationApi.createVideoGenerationTask.mockResolvedValue(response)
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const wrapper = mountComposer()
+
+  await uploadReference(wrapper)
+  await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+  await flush()
+  await flush()
+  wrapper.findComponent({ name: 'RequestPreviewDrawer' }).vm.$emit(
+    'confirm-real',
+    realReadyDryRunEnvelope.data.confirmationToken,
+  )
+  await flush()
+  await flush()
+  await flush()
+
+  return {
+    wrapper,
+    alert: wrapper.find('[data-testid="task-action-error"]'),
+    consoleError,
+  }
+}
+
+async function renderThrownConfirmationFailure(thrownValue) {
+  videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(realReadyDryRunEnvelope)
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const wrapper = mountComposer()
+
+  await uploadReference(wrapper)
+  await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+  await flush()
+  await flush()
+  const store = useVideoGenerationStore()
+  vi.spyOn(store, 'confirmRealGeneration').mockRejectedValue(thrownValue)
+  wrapper.findComponent({ name: 'RequestPreviewDrawer' }).vm.$emit(
+    'confirm-real',
+    realReadyDryRunEnvelope.data.confirmationToken,
+  )
+  await flush()
+  await flush()
+
+  return {
+    wrapper,
+    alert: wrapper.find('[data-testid="task-action-error"]'),
+    consoleError,
+  }
 }
 
 describe('VideoGeneration composer', () => {
@@ -384,6 +446,604 @@ describe('VideoGeneration composer', () => {
       wrapper.findComponent({ name: 'RequestPreviewDrawer' }).emitted('confirm-real'),
     ).toBeUndefined()
     expect(videoGenerationApi.createVideoGenerationTask).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('catches an invalid confirmation token, closes the stale preview, and allows a new Dry-run', async () => {
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(realReadyDryRunEnvelope)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+
+    wrapper.findComponent({ name: 'RequestPreviewDrawer' }).vm.$emit(
+      'confirm-real',
+      'expired-confirmation-token',
+    )
+    await flush()
+    await flush()
+
+    const alert = wrapper.find('[data-testid="task-action-error"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toBe(LOCAL_CONFIRMATION_FAILURE)
+    expect(alert.text()).not.toContain('expired-confirmation-token')
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(false)
+    expect(videoGenerationApi.createVideoGenerationTask).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue({
+      ...realReadyDryRunEnvelope,
+      data: {
+        ...realReadyDryRunEnvelope.data,
+        confirmationToken: 'replacement-confirmation-token',
+      },
+    })
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+
+    expect(wrapper.find('[data-testid="task-action-error"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(true)
+    expect(videoGenerationApi.dryRunVideoGeneration).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('shows bounded sanitized Ark creation fields without leaking provider payload details', async () => {
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(realReadyDryRunEnvelope)
+    videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
+      code: 403,
+      data: {
+        error: {
+          code: `ProviderDenied\n\u202eBearer provider-bearer-secret Basic YmFkOmNyZWRlbnRpYWw= requestId=req-code-secret`,
+          message: `配额不足 https://cdn.example.test/temporary/private.mp4 token="provider-token-secret" password=provider-password-secret credential=provider-credential-secret api_key=provider-api-key-secret secret=provider-assignment-secret request_id req-space-secret task-provider-secret cgt-20260717123456-private ${'很长'.repeat(200)}`,
+        },
+        taskIds: ['cgt-details-task-secret'],
+      },
+      msg: 'outer-secret-should-not-be-used',
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+    wrapper.findComponent({ name: 'RequestPreviewDrawer' }).vm.$emit(
+      'confirm-real',
+      realReadyDryRunEnvelope.data.confirmationToken,
+    )
+    await flush()
+    await flush()
+    await flush()
+
+    expect(videoGenerationApi.createVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(useVideoGenerationStore().dryRunResult.confirmationToken).toBe('')
+    expect(consoleError).not.toHaveBeenCalled()
+    const alert = wrapper.find('[data-testid="task-action-error"]')
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    for (const sensitiveValue of [
+      'https://cdn.example.test/temporary/private.mp4',
+      'provider-bearer-secret',
+      'YmFkOmNyZWRlbnRpYWw=',
+      'req-code-secret',
+      'req-space-secret',
+      'requestId',
+      'provider-token-secret',
+      'provider-password-secret',
+      'provider-credential-secret',
+      'provider-api-key-secret',
+      'provider-assignment-secret',
+      'task-provider-secret',
+      'cgt-20260717123456-private',
+      'cgt-details-task-secret',
+      'outer-secret-should-not-be-used',
+    ]) {
+      expect(alert.text()).not.toContain(sensitiveValue)
+    }
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('redacts namespaced credential assignments and complete authorization values from the DOM', async () => {
+    const authorizationValue = ['Authori', 'zation: ', 'Bear', 'er authorization-secret'].join('')
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'CredentialRejected',
+          message: `凭证拒绝 ARK_API_KEY="alpha two words" clientSecret='beta two words' auth_token=\`gamma two words\` namespace.password=“delta two words” tenant-client-secret:‘epsilon two words’ x_request_id=“zeta two words” ${authorizationValue} Bearer bare-bearer-secret Basic YmFyZS1iYXNpYy1zZWNyZXQ=`,
+        },
+      },
+      msg: 'provider rejected credentials',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const sensitiveValue of [
+      'ARK_API_KEY',
+      'alpha two words',
+      'clientSecret',
+      'beta two words',
+      'auth_token',
+      'gamma two words',
+      'namespace.password',
+      'delta two words',
+      'tenant-client-secret',
+      'epsilon two words',
+      'x_request_id',
+      'zeta two words',
+      'Authorization',
+      'authorization-secret',
+      'Bearer',
+      'bare-bearer-secret',
+      'Basic',
+      'YmFyZS1iYXNpYy1zZWNyZXQ=',
+    ]) {
+      expect(alert.text()).not.toContain(sensitiveValue)
+    }
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('redacts complete escaped ASCII-quoted assignment values from the DOM', async () => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'EscapedQuoteRejected',
+          message: String.raw`转义拒绝 token=\"alpha bravo charlie\"; token="delta \"echo\" foxtrot golf"`,
+        },
+      },
+      msg: 'provider rejected escaped quoting',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of [
+      'alpha',
+      'bravo',
+      'charlie',
+      'delta',
+      'echo',
+      'foxtrot',
+      'golf',
+    ]) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('redacts fullwidth, guillemet, and CJK-quoted assignment values from the DOM', async () => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'UnicodeQuoteRejected',
+          message: '引用拒绝 token=＂hotel india juliet＂; requestId=«kilo lima mike»; password=「november oscar papa」',
+        },
+      },
+      msg: 'provider rejected Unicode quoting',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of [
+      'hotel',
+      'india',
+      'juliet',
+      'kilo',
+      'lima',
+      'mike',
+      'november',
+      'oscar',
+      'papa',
+    ]) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('redacts an unterminated quoted assignment through the field end', async () => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'UnterminatedQuoteRejected',
+          message: '未闭合引用拒绝 token="quebec romeo sierra',
+        },
+      },
+      msg: 'provider rejected unterminated quoting',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of ['quebec', 'romeo', 'sierra']) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      label: 'ASCII comma',
+      message: '分隔符拒绝 token="alpha, bravo charlie", safe=visible',
+      opaqueValues: ['alpha', 'bravo', 'charlie'],
+    },
+    {
+      label: 'ASCII semicolon',
+      message: "分隔符拒绝 password='delta; echo foxtrot'; safe=visible",
+      opaqueValues: ['delta', 'echo', 'foxtrot'],
+    },
+    {
+      label: 'fullwidth comma',
+      message: '分隔符拒绝 requestId=“golf， hotel india”，safe=visible',
+      opaqueValues: ['golf', 'hotel', 'india'],
+    },
+    {
+      label: 'JSON-escaped semicolon',
+      message: String.raw`分隔符拒绝 token=\"juliet; kilo lima\"; safe=visible`,
+      opaqueValues: ['juliet', 'kilo', 'lima'],
+    },
+    {
+      label: 'authorization comma',
+      message: ['分隔符拒绝 Authori', 'zation: Bear', 'er "mike, november oscar", safe=visible'].join(''),
+      opaqueValues: ['mike', 'november', 'oscar'],
+    },
+  ])('keeps safe text after a closed $label quoted value', async ({ message, opaqueValues }) => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: { error: { code: 'QuotedDelimiterRejected', message } },
+      msg: 'provider rejected quoted delimiters',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of opaqueValues) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('conservatively hides an ambiguous escaped quote field instead of leaking after a delimiter', async () => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'AmbiguousQuoteRejected',
+          message: String.raw`歧义引用拒绝 token=\"alpha; bravo\" trailing; safe=visible`,
+        },
+      },
+      msg: 'provider rejected ambiguous quoting',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of ['alpha', 'bravo', 'trailing']) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      label: 'fullwidth snake case',
+      message: '全角键拒绝 ＡＲＫ＿ＡＰＩ＿ＫＥＹ＝＂alpha bravo charlie＂; safe=visible',
+      opaqueValues: ['alpha', 'bravo', 'charlie'],
+    },
+    {
+      label: 'fullwidth camel case',
+      message: '全角键拒绝 ｃｌｉｅｎｔＳｅｃｒｅｔ：«delta echo foxtrot»; safe=visible',
+      opaqueValues: ['delta', 'echo', 'foxtrot'],
+    },
+    {
+      label: 'fullwidth request ID',
+      message: '全角键拒绝 ｒｅｑｕｅｓｔＩｄ=「golf hotel india」; safe=visible',
+      opaqueValues: ['golf', 'hotel', 'india'],
+    },
+  ])('normalizes and redacts a $label candidate before classification', async ({ message, opaqueValues }) => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: { error: { code: 'FullwidthKeyRejected', message } },
+      msg: 'provider rejected fullwidth keys',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const opaqueValue of opaqueValues) {
+      expect(alert.text()).not.toContain(opaqueValue)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('redacts escaped and protocol-relative URLs plus assigned and Unicode-separated task IDs', async () => {
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: 'ResourceRejected',
+          message: '资源拒绝 https:\\/\\/cdn.example.test\\/temporary\\/private.mp4 \\/\\/media.example.test\\/temporary\\/last-frame.png //plain.example.test/temporary/video.mp4 taskId="task first private" namespace.task_id=\'task second private\' task-id=`task third private` cgt‐20260717‐private cgt－20260717－private',
+        },
+      },
+      msg: 'provider rejected resources',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    for (const sensitiveValue of [
+      'https:\\/\\/cdn.example.test\\/temporary\\/private.mp4',
+      '\\/\\/media.example.test\\/temporary\\/last-frame.png',
+      '//plain.example.test/temporary/video.mp4',
+      'cdn.example.test',
+      'media.example.test',
+      'plain.example.test',
+      'taskId',
+      'task first private',
+      'namespace.task_id',
+      'task second private',
+      'task-id',
+      'task third private',
+      'cgt‐20260717‐private',
+      'cgt－20260717－private',
+    ]) {
+      expect(alert.text()).not.toContain(sensitiveValue)
+    }
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('does not split an emoji at the provider-code field boundary', async () => {
+    const fieldPrefix = 'C'.repeat(62)
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: `${fieldPrefix}😀X`,
+          message: '字段边界',
+        },
+      },
+      msg: 'provider boundary failure',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    expect(alert.text()).not.toContain(fieldPrefix)
+    expect(alert.text()).not.toContain('😀')
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it('does not split an emoji at the final 240-code-unit boundary', async () => {
+    const visiblePrefix = 'F'.repeat(229)
+    const { wrapper, alert } = await renderRealFailure({
+      code: 403,
+      data: {
+        error: {
+          code: '',
+          message: `${visiblePrefix}😀X`,
+        },
+      },
+      msg: 'provider final boundary failure',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    expect(alert.text()).not.toContain(visiblePrefix)
+    expect(alert.text()).not.toContain('😀')
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toContain('\uFFFD')
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    wrapper.unmount()
+  })
+
+  it.each([
+    [40901, LOCAL_CONFIRMATION_FAILURE],
+    [50201, ARK_CREATION_FAILURE],
+    [403, GENERIC_CREATION_FAILURE],
+  ])('maps structured response code %s to a fixed creation alert', async (responseCode, expected) => {
+    const rawMessage = `raw-provider-message-${responseCode}`
+    const { wrapper, alert, consoleError } = await renderRealFailure({
+      code: responseCode,
+      data: {
+        error: {
+          code: `raw-provider-code-${responseCode}`,
+          message: rawMessage,
+          requestId: `raw-request-id-${responseCode}`,
+        },
+        taskIds: [`raw-task-id-${responseCode}`],
+      },
+      msg: `raw-error-message-${responseCode}`,
+    })
+
+    expect(alert.text()).toBe(expected)
+    expect(alert.text()).not.toContain('raw-')
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('requires an exact integer response code before selecting a fixed Ark message', async () => {
+    const { wrapper, alert, consoleError } = await renderRealFailure({
+      code: '50201',
+      data: {
+        error: { code: 'raw-string-code', message: 'raw-string-message' },
+      },
+      msg: 'raw-string-error-message',
+    })
+
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    expect(alert.text()).not.toContain('raw-')
+    expect(consoleError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps huge malformed provider and raw error strings out of the DOM without throwing', async () => {
+    const bearerPrefix = ['Bear', 'er', ' '].join('')
+    const basicPrefix = ['Bas', 'ic', ' '].join('')
+    const authFlood = `${bearerPrefix.repeat(5_000)}${basicPrefix.repeat(5_000)}`
+    const rawProviderMessage = [
+      'token="alpha, bravo',
+      String.raw`token=\"charlie; delta`,
+      'requestId=«echo， foxtrot',
+      'credential=⟦golf; hotel⟧',
+      authFlood,
+      'opaque-provider-tail',
+    ].join(' | ')
+    const { wrapper, alert, consoleError } = await renderRealFailure({
+      code: 50201,
+      data: {
+        error: {
+          code: 'malicious-provider-code',
+          message: rawProviderMessage,
+          requestId: 'malicious-request-id',
+        },
+        taskIds: ['malicious-task-id'],
+      },
+      msg: 'malicious raw Error.message must never render',
+    })
+
+    expect(alert.text()).toBe(ARK_CREATION_FAILURE)
+    for (const rawFragment of [
+      'alpha',
+      'charlie',
+      'foxtrot',
+      '⟦golf; hotel⟧',
+      'Bearer',
+      'Basic',
+      'opaque-provider-tail',
+      'malicious-provider-code',
+      'malicious-request-id',
+      'malicious-task-id',
+      'malicious raw Error.message',
+    ]) {
+      expect(alert.text()).not.toContain(rawFragment)
+    }
+    expect(alert.text().length).toBeLessThanOrEqual(240)
+    expect(alert.text()).not.toMatch(/\p{C}/u)
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps invalid recovered task IDs out of task state and the DOM', async () => {
+    const validTaskId = 'cgt-valid_partial:ui'
+    const invalidTaskIds = [
+      ' cgt-whitespace-payload ',
+      'cgt/invalid-path-payload',
+      'cgt?invalid-query-payload',
+      'cgt-\u0000invalid-control-payload',
+      `cgt-${'z'.repeat(253)}`,
+    ]
+    const { wrapper, alert, consoleError } = await renderRealFailure({
+      code: 50201,
+      data: {
+        error: {
+          code: 'raw-invalid-task-id-code',
+          message: 'raw invalid task ID payload must not render',
+        },
+        taskIds: [validTaskId, validTaskId, ...invalidTaskIds, 7, null, { id: 'object-id' }],
+      },
+      msg: 'raw invalid task ID envelope',
+    })
+
+    expect(useVideoGenerationStore().taskList).toEqual([
+      { id: validTaskId, status: 'queued' },
+    ])
+    expect(alert.text()).toBe(ARK_CREATION_FAILURE)
+    const rendered = wrapper.html()
+    for (const invalidTaskId of invalidTaskIds) {
+      expect(rendered).not.toContain(invalidTaskId)
+    }
+    expect(rendered).not.toContain('raw invalid task ID payload')
+    expect(videoGenerationApi.getVideoGenerationTask).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      label: 'throwing code getter',
+      create() {
+        return Object.create(VideoGenerationStoreError.prototype, {
+          code: {
+            get() { throw new Error('hostile-code-getter') },
+          },
+        })
+      },
+    },
+    {
+      label: 'throwing details getter',
+      create() {
+        return Object.create(VideoGenerationStoreError.prototype, {
+          code: { value: 'VIDEO_GENERATION_API_REJECTED' },
+          details: {
+            get() { throw new Error('hostile-details-getter') },
+          },
+        })
+      },
+    },
+    {
+      label: 'throwing responseCode getter',
+      create() {
+        return Object.create(VideoGenerationStoreError.prototype, {
+          code: { value: 'VIDEO_GENERATION_API_REJECTED' },
+          details: {
+            value: {
+              get responseCode() { throw new Error('hostile-response-code-getter') },
+            },
+          },
+        })
+      },
+    },
+    {
+      label: 'throwing getPrototypeOf proxy trap',
+      create() {
+        return new Proxy({}, {
+          getPrototypeOf() { throw new Error('hostile-prototype-trap') },
+        })
+      },
+    },
+  ])('contains a hostile thrown value with a $label', async ({ create }) => {
+    const { wrapper, alert, consoleError } = await renderThrownConfirmationFailure(create())
+
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toBe(GENERIC_CREATION_FAILURE)
+    expect(alert.text()).not.toContain('hostile-')
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'RequestPreviewDrawer' }).props('modelValue')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps the successful real-confirmation path handled and free of stale errors', async () => {
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(realReadyDryRunEnvelope)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+    wrapper.findComponent({ name: 'RequestPreviewDrawer' }).vm.$emit(
+      'confirm-real',
+      realReadyDryRunEnvelope.data.confirmationToken,
+    )
+    await flush()
+    await flush()
+
+    expect(videoGenerationApi.createVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(useVideoGenerationStore().taskList).toEqual([
+      { id: 'task-1', status: 'queued' },
+    ])
+    expect(wrapper.find('[data-testid="task-action-error"]').exists()).toBe(false)
+    expect(consoleError).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
