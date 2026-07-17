@@ -11,6 +11,7 @@ vi.mock('@/api/videoGeneration', () => ({
   dryRunVideoGeneration: vi.fn(),
   createVideoGenerationTask: vi.fn(),
   getVideoGenerationTask: vi.fn(),
+  listVideoGenerationTasks: vi.fn(),
   deleteVideoGenerationTask: vi.fn(),
 }))
 
@@ -1330,6 +1331,736 @@ describe('useVideoGenerationStore', () => {
     await Promise.resolve()
 
     expect(store.taskList).toEqual([{ id: 'task-dispose-race', status: 'running' }])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('accepts expired as an Ark terminal state and stops polling', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: 'task-expired', status: 'expired' },
+      msg: 'ok',
+    })
+
+    store.resumeTask('task-expired')
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(store.taskList).toContainEqual(expect.objectContaining({
+      id: 'task-expired',
+      status: 'expired',
+    }))
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.startPolling('task-expired')).toBe(false)
+  })
+
+  it('loads and merges paged task history only on explicit request', async () => {
+    const store = useVideoGenerationStore()
+    store.taskList = [{
+      id: 'task-1',
+      status: 'running',
+      created_at: 100,
+      local: 'preserved',
+    }]
+    expect(videoGenerationApi.listVideoGenerationTasks).not.toHaveBeenCalled()
+    videoGenerationApi.listVideoGenerationTasks.mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          {
+            id: 'task-2',
+            status: 'failed',
+            created_at: 300,
+            error: { code: 'GenerationFailed', message: 'failed' },
+          },
+          {
+            id: 'task-1',
+            status: 'succeeded',
+            created_at: 200,
+            content: { video_url: 'https://cdn.test/a.mp4' },
+          },
+        ],
+        total: 2,
+      },
+      msg: 'ok',
+    })
+
+    const result = await store.loadTaskHistory({
+      pageNum: 1,
+      pageSize: 20,
+      status: 'succeeded',
+    })
+
+    expect(videoGenerationApi.listVideoGenerationTasks).toHaveBeenCalledWith({
+      pageNum: 1,
+      pageSize: 20,
+      status: 'succeeded',
+      taskIds: [],
+      model: undefined,
+      serviceTier: undefined,
+    })
+    expect(result).toEqual(expect.objectContaining({ total: 2 }))
+    expect(store.taskQuery).toEqual({
+      pageNum: 1,
+      pageSize: 20,
+      status: 'succeeded',
+      taskIds: [],
+      model: undefined,
+      serviceTier: undefined,
+    })
+    expect(store.taskTotal).toBe(2)
+    expect(store.taskListPending).toBe(false)
+    expect(store.taskList.map((task) => task.id)).toEqual(['task-2', 'task-1'])
+    expect(store.taskList[1]).toMatchObject({
+      id: 'task-1',
+      status: 'succeeded',
+      local: 'preserved',
+    })
+  })
+
+  it('keeps task history state atomic when the query or response is invalid', async () => {
+    const store = useVideoGenerationStore()
+    store.taskList = [{ id: 'existing', status: 'failed' }]
+
+    await expect(store.loadTaskHistory({ status: 'expired' })).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_INVALID_TASK_QUERY',
+    })
+    expect(videoGenerationApi.listVideoGenerationTasks).not.toHaveBeenCalled()
+
+    videoGenerationApi.listVideoGenerationTasks.mockResolvedValue({
+      code: 0,
+      data: { items: 'not-an-array', total: -1 },
+      msg: 'ok',
+    })
+    await expect(store.loadTaskHistory({ pageNum: 2 })).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_MALFORMED',
+    })
+
+    expect(store.taskQuery).toMatchObject({ pageNum: 1, pageSize: 20 })
+    expect(store.taskTotal).toBe(0)
+    expect(store.taskList).toEqual([{ id: 'existing', status: 'failed' }])
+    expect(store.taskListPending).toBe(false)
+  })
+
+  it.each([
+    ['queued', 'cancelled', true],
+    ['succeeded', null, false],
+    ['failed', null, false],
+    ['expired', null, false],
+  ])('DELETE matrix allows %s tasks and applies the expected local result', async (
+    status,
+    expectedStatus,
+    remains,
+  ) => {
+    const store = useVideoGenerationStore()
+    const task = { id: `task-${status}`, status, local: 'keep' }
+    store.taskList = [task]
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, deleted: true },
+      msg: 'ok',
+    })
+
+    await expect(store.removeOrCancelTask(task)).resolves.toBeTruthy()
+
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledWith({
+      taskId: task.id,
+    })
+    expect(store.taskActionPending).toBe(false)
+    if (remains) {
+      expect(store.taskList).toEqual([{ ...task, status: expectedStatus }])
+    } else {
+      expect(store.taskList).toEqual([])
+    }
+  })
+
+  it.each(['running', 'cancelled', 'unavailable'])('DELETE matrix rejects %s tasks locally', async (status) => {
+    const store = useVideoGenerationStore()
+    const task = { id: `task-${status}`, status }
+    store.taskList = [task]
+
+    await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_TASK_ACTION_NOT_ALLOWED',
+    })
+
+    expect(videoGenerationApi.deleteVideoGenerationTask).not.toHaveBeenCalled()
+    expect(store.taskList).toEqual([task])
+    expect(store.taskActionPending).toBe(false)
+  })
+
+  it('DELETE matrix rejects a task without a valid string ID locally', async () => {
+    const store = useVideoGenerationStore()
+    const task = { status: 'queued' }
+
+    await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_TASK_ACTION_NOT_ALLOWED',
+    })
+    expect(videoGenerationApi.deleteVideoGenerationTask).not.toHaveBeenCalled()
+    expect(videoGenerationApi.getVideoGenerationTask).not.toHaveBeenCalled()
+  })
+
+  it.each([409, 400])('DELETE matrix refreshes the real task state after an Ark %i race', async (status) => {
+    const store = useVideoGenerationStore()
+    const task = { id: `task-race-${status}`, status: 'queued', local: 'preserved' }
+    store.taskList = [task]
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: {
+          status,
+          code: 'TaskStateChanged',
+          message: 'task state changed',
+          requestId: `request-${status}`,
+        },
+      },
+      msg: 'Ark task deletion failed',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, status: 'running', progress: 25 },
+      msg: 'ok',
+    })
+
+    await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledWith({ taskId: task.id })
+    expect(store.taskList).toEqual([{
+      ...task,
+      status: 'running',
+      progress: 25,
+    }])
+    expect(store.taskActionPending).toBe(false)
+  })
+
+  it.each([400, 401, 403, 404])(
+    'task history polling marks a known task unavailable and stops after definitive %i',
+    async (status) => {
+      vi.useFakeTimers()
+      const store = useVideoGenerationStore()
+      const taskId = `task-definitive-${status}`
+      store.taskList = [{ id: taskId, status: 'running', local: 'preserved' }]
+      videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+        code: 50202,
+        data: {
+          error: { status, code: 'NotQueryable', message: 'not queryable' },
+        },
+        msg: 'Ark task query failed',
+      })
+
+      store.startPolling(taskId)
+      await vi.advanceTimersByTimeAsync(3000)
+
+      expect(store.taskList).toEqual([{
+        id: taskId,
+        status: 'unavailable',
+        local: 'preserved',
+      }])
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('ignores an in-flight task history response after store disposal', async () => {
+    const store = useVideoGenerationStore()
+    const response = createDeferred()
+    store.taskList = [{ id: 'task-before-dispose', status: 'running' }]
+    videoGenerationApi.listVideoGenerationTasks.mockReturnValue(response.promise)
+
+    const request = store.loadTaskHistory({ pageNum: 2 })
+    expect(store.taskListPending).toBe(true)
+    store.$dispose()
+    response.resolve({
+      code: 0,
+      data: {
+        items: [{ id: 'task-after-dispose', status: 'failed' }],
+        total: 1,
+      },
+      msg: 'ok',
+    })
+
+    await expect(request).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([{ id: 'task-before-dispose', status: 'running' }])
+    expect(store.taskTotal).toBe(0)
+    expect(store.taskListPending).toBe(false)
+  })
+
+  it('ignores an in-flight DELETE response after store disposal', async () => {
+    const store = useVideoGenerationStore()
+    const response = createDeferred()
+    const task = { id: 'task-delete-dispose', status: 'queued' }
+    store.taskList = [task]
+    videoGenerationApi.deleteVideoGenerationTask.mockReturnValue(response.promise)
+
+    const request = store.removeOrCancelTask(task)
+    expect(store.taskActionPending).toBe(true)
+    store.$dispose()
+    response.resolve({
+      code: 0,
+      data: { id: task.id, deleted: true },
+      msg: 'ok',
+    })
+
+    await expect(request).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([task])
+    expect(store.taskActionPending).toBe(false)
+  })
+
+  it.each(['clear', 'dispose'])(
+    'keeps a DELETE race refresh stale after store %s',
+    async (lifecycleChange) => {
+      const store = useVideoGenerationStore()
+      const refresh = createDeferred()
+      const task = { id: `task-refresh-${lifecycleChange}`, status: 'queued' }
+      store.taskList = [task]
+      videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+        code: 50203,
+        data: {
+          error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+        },
+        msg: 'Ark task deletion failed',
+      })
+      videoGenerationApi.getVideoGenerationTask.mockReturnValue(refresh.promise)
+
+      const request = store.removeOrCancelTask(task)
+      await vi.waitFor(() => {
+        expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+      })
+      if (lifecycleChange === 'clear') store.clearDraft()
+      else store.$dispose()
+      refresh.resolve({
+        code: 0,
+        data: { id: task.id, status: 'running', progress: 50 },
+        msg: 'ok',
+      })
+
+      await expect(request).rejects.toMatchObject({
+        code: 'VIDEO_GENERATION_API_REJECTED',
+        details: { data: { error: { status: 409 } } },
+      })
+      expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+      expect(store.taskList).toEqual(lifecycleChange === 'clear' ? [] : [task])
+      expect(store.taskActionPending).toBe(false)
+    },
+  )
+
+  it('does not let a stale DELETE refresh clear a newer action pending flag', async () => {
+    const store = useVideoGenerationStore()
+    const oldRefresh = createDeferred()
+    const newDelete = createDeferred()
+    const oldTask = { id: 'task-old-refresh', status: 'queued' }
+    const newTask = { id: 'task-new-action', status: 'queued' }
+    store.taskList = [oldTask]
+    videoGenerationApi.deleteVideoGenerationTask
+      .mockResolvedValueOnce({
+        code: 50203,
+        data: {
+          error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+        },
+        msg: 'Ark task deletion failed',
+      })
+      .mockReturnValueOnce(newDelete.promise)
+    videoGenerationApi.getVideoGenerationTask.mockReturnValue(oldRefresh.promise)
+
+    const oldAction = store.removeOrCancelTask(oldTask)
+    await vi.waitFor(() => {
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    })
+    store.clearDraft()
+    store.taskList = [newTask]
+    const currentAction = store.removeOrCancelTask(newTask)
+    expect(store.taskActionPending).toBe(true)
+
+    oldRefresh.resolve({
+      code: 0,
+      data: { id: oldTask.id, status: 'running' },
+      msg: 'ok',
+    })
+    await expect(oldAction).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+    expect(store.taskActionPending).toBe(true)
+    expect(store.taskList).toEqual([newTask])
+
+    newDelete.resolve({
+      code: 0,
+      data: { id: newTask.id, deleted: true },
+      msg: 'ok',
+    })
+    await currentAction
+    expect(store.taskActionPending).toBe(false)
+    expect(store.taskList).toEqual([{ ...newTask, status: 'cancelled' }])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(2)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let older history re-add a successfully deleted completed task', async () => {
+    const store = useVideoGenerationStore()
+    const history = createDeferred()
+    const task = {
+      id: 'task-history-delete',
+      status: 'succeeded',
+      content: { video_url: 'https://cdn.test/task-history-delete.mp4' },
+    }
+    store.taskList = [task]
+    videoGenerationApi.listVideoGenerationTasks.mockReturnValue(history.promise)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, deleted: true },
+      msg: 'ok',
+    })
+
+    const historyRequest = store.loadTaskHistory()
+    await store.removeOrCancelTask(task)
+    history.resolve({
+      code: 0,
+      data: { items: [task], total: 1 },
+      msg: 'ok',
+    })
+
+    await expect(historyRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.taskListPending).toBe(false)
+  })
+
+  it('does not let older history overwrite a successful queued cancellation', async () => {
+    const store = useVideoGenerationStore()
+    const history = createDeferred()
+    const task = { id: 'task-history-cancel', status: 'queued' }
+    store.taskList = [task]
+    videoGenerationApi.listVideoGenerationTasks.mockReturnValue(history.promise)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, deleted: true },
+      msg: 'ok',
+    })
+
+    const historyRequest = store.loadTaskHistory()
+    await store.removeOrCancelTask(task)
+    history.resolve({
+      code: 0,
+      data: { items: [task], total: 1 },
+      msg: 'ok',
+    })
+
+    await expect(historyRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([{ ...task, status: 'cancelled' }])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.taskListPending).toBe(false)
+  })
+
+  it('does not let older history regress a newer terminal polling result', async () => {
+    const store = useVideoGenerationStore()
+    const history = createDeferred()
+    const task = { id: 'task-history-poll', status: 'running' }
+    store.taskList = [task]
+    videoGenerationApi.listVideoGenerationTasks.mockReturnValue(history.promise)
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, status: 'expired' },
+      msg: 'ok',
+    })
+
+    const historyRequest = store.loadTaskHistory()
+    await store.pollTask(task.id)
+    history.resolve({
+      code: 0,
+      data: { items: [{ ...task, status: 'running' }], total: 1 },
+      msg: 'ok',
+    })
+
+    await expect(historyRequest).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([{ ...task, status: 'expired' }])
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(store.taskListPending).toBe(false)
+  })
+
+  it('makes the DELETE race refresh authoritative over an older in-flight poll', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const oldPoll = createDeferred()
+    const refresh = createDeferred()
+    const task = { id: 'task-poll-delete-race', status: 'queued' }
+    store.taskList = [task]
+    videoGenerationApi.getVideoGenerationTask
+      .mockReturnValueOnce(oldPoll.promise)
+      .mockReturnValueOnce(refresh.promise)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+      },
+      msg: 'Ark task deletion failed',
+    })
+
+    store.startPolling(task.id)
+    await vi.advanceTimersByTimeAsync(3000)
+    const action = store.removeOrCancelTask(task)
+    await vi.waitFor(() => {
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(2)
+    })
+    refresh.resolve({
+      code: 0,
+      data: { id: task.id, status: 'running', progress: 60 },
+      msg: 'ok',
+    })
+    await expect(action).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+    oldPoll.resolve({
+      code: 0,
+      data: { id: task.id, status: 'queued', progress: 10 },
+      msg: 'ok',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.taskList).toEqual([{
+      ...task,
+      status: 'running',
+      progress: 60,
+    }])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('makes the DELETE race refresh authoritative over an older direct pollTask call', async () => {
+    const store = useVideoGenerationStore()
+    const oldPoll = createDeferred()
+    const refresh = createDeferred()
+    const task = { id: 'task-direct-delete-race', status: 'queued' }
+    store.taskList = [task]
+    videoGenerationApi.getVideoGenerationTask
+      .mockReturnValueOnce(oldPoll.promise)
+      .mockReturnValueOnce(refresh.promise)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+      },
+      msg: 'Ark task deletion failed',
+    })
+
+    const oldQuery = store.pollTask(task.id)
+    const action = store.removeOrCancelTask(task)
+    await vi.waitFor(() => {
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(2)
+    })
+    refresh.resolve({
+      code: 0,
+      data: { id: task.id, status: 'running', progress: 70 },
+      msg: 'ok',
+    })
+    await expect(action).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+    oldPoll.resolve({
+      code: 0,
+      data: { id: task.id, status: 'queued', progress: 5 },
+      msg: 'ok',
+    })
+
+    await expect(oldQuery).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([{
+      ...task,
+      status: 'running',
+      progress: 70,
+    }])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores an in-flight direct pollTask response after clearDraft', async () => {
+    const store = useVideoGenerationStore()
+    const response = createDeferred()
+    const task = { id: 'task-direct-clear', status: 'running' }
+    store.taskList = [task]
+    videoGenerationApi.getVideoGenerationTask.mockReturnValue(response.promise)
+
+    const request = store.pollTask(task.id)
+    store.clearDraft()
+    response.resolve({
+      code: 0,
+      data: { id: task.id, status: 'expired' },
+      msg: 'ok',
+    })
+
+    await expect(request).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_STALE_OPERATION',
+    })
+    expect(store.taskList).toEqual([])
+  })
+
+  it('stops scheduled polling when direct pollTask receives expired', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const task = { id: 'task-direct-terminal', status: 'running' }
+    store.taskList = [task]
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 0,
+      data: { id: task.id, status: 'expired' },
+      msg: 'ok',
+    })
+
+    store.startPolling(task.id)
+    expect(vi.getTimerCount()).toBe(1)
+    await store.pollTask(task.id)
+
+    expect(store.taskList).toEqual([{ ...task, status: 'expired' }])
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['network', '5xx'])(
+    'restores one polling timer after a transient %s DELETE race refresh failure',
+    async (failureKind) => {
+      vi.useFakeTimers()
+      const store = useVideoGenerationStore()
+      const task = { id: `task-refresh-${failureKind}`, status: 'queued' }
+      store.taskList = [task]
+      store.startPolling(task.id)
+      videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+        code: 50203,
+        data: {
+          error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+        },
+        msg: 'Ark task deletion failed',
+      })
+      if (failureKind === 'network') {
+        videoGenerationApi.getVideoGenerationTask.mockRejectedValue(new Error('timeout'))
+      } else {
+        videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+          code: 50202,
+          data: {
+            error: { status: 503, code: 'ServiceUnavailable', message: 'retry later' },
+          },
+          msg: 'Ark task query failed',
+        })
+      }
+
+      await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+        code: 'VIDEO_GENERATION_API_REJECTED',
+        details: { data: { error: { status: 409 } } },
+      })
+
+      expect(store.taskList).toEqual([task])
+      expect(store.taskActionPending).toBe(false)
+      expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(2999)
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('does not restore polling after a definitive DELETE race refresh failure', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const task = { id: 'task-refresh-definitive', status: 'queued' }
+    store.taskList = [task]
+    store.startPolling(task.id)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+      },
+      msg: 'Ark task deletion failed',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockResolvedValue({
+      code: 50202,
+      data: {
+        error: { status: 404, code: 'NotFound', message: 'not queryable' },
+      },
+      msg: 'Ark task query failed',
+    })
+
+    await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+      details: { data: { error: { status: 409 } } },
+    })
+
+    expect(store.taskList).toEqual([{ ...task, status: 'unavailable' }])
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not start polling after transient refresh failure when it was not active', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const task = { id: 'task-refresh-inactive', status: 'queued' }
+    store.taskList = [task]
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+      },
+      msg: 'Ark task deletion failed',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockRejectedValue(new Error('timeout'))
+
+    await expect(store.removeOrCancelTask(task)).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not restore formerly active polling when a DELETE refresh becomes stale', async () => {
+    vi.useFakeTimers()
+    const store = useVideoGenerationStore()
+    const refresh = createDeferred()
+    const task = { id: 'task-refresh-stale-active', status: 'queued' }
+    store.taskList = [task]
+    store.startPolling(task.id)
+    videoGenerationApi.deleteVideoGenerationTask.mockResolvedValue({
+      code: 50203,
+      data: {
+        error: { status: 409, code: 'TaskRunning', message: 'state changed' },
+      },
+      msg: 'Ark task deletion failed',
+    })
+    videoGenerationApi.getVideoGenerationTask.mockReturnValue(refresh.promise)
+
+    const action = store.removeOrCancelTask(task)
+    await vi.waitFor(() => {
+      expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
+    })
+    store.clearDraft()
+    refresh.reject(new Error('timeout'))
+
+    await expect(action).rejects.toMatchObject({
+      code: 'VIDEO_GENERATION_API_REJECTED',
+    })
+    expect(store.taskList).toEqual([])
+    expect(store.taskActionPending).toBe(false)
+    expect(videoGenerationApi.deleteVideoGenerationTask).toHaveBeenCalledTimes(1)
+    expect(videoGenerationApi.getVideoGenerationTask).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
   })
 })

@@ -4,12 +4,15 @@ import { onScopeDispose, reactive, ref, watch } from 'vue'
 import {
   createVideoGenerationTask,
   deleteReference,
+  deleteVideoGenerationTask,
   dryRunVideoGeneration,
   getVideoGenerationTask,
+  listVideoGenerationTasks,
   registerRemoteReference,
   uploadReference,
 } from '@/api/videoGeneration'
 import {
+  ARK_LIST_FILTER_STATUSES,
   DEFAULT_GENERATION_CONFIG,
   validateGenerationConfig,
 } from '../domain/arkVideoContract.js'
@@ -20,9 +23,22 @@ const createEmptyDoc = () => ({
 })
 
 const createDefaultConfig = () => ({ ...DEFAULT_GENERATION_CONFIG })
+const createDefaultTaskQuery = () => ({
+  pageNum: 1,
+  pageSize: 20,
+  status: undefined,
+  taskIds: [],
+  model: undefined,
+  serviceTier: undefined,
+})
 const CONFIG_KEYS = Object.keys(DEFAULT_GENERATION_CONFIG)
-const TASK_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
-const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
+const ARK_TASK_STATUSES = new Set([
+  'queued', 'running', 'succeeded', 'failed', 'cancelled', 'expired',
+])
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'expired'])
+const DELETABLE_TASK_STATUSES = new Set(['queued', 'succeeded', 'failed', 'expired'])
+const DEFINITIVE_QUERY_STATUSES = new Set([400, 401, 403, 404])
 const VISIBLE_POLL_INTERVAL_MS = 3000
 const HIDDEN_POLL_INTERVAL_MS = 10000
 
@@ -118,6 +134,95 @@ function requireObject(data, message = '视频生成接口未返回有效数据'
   return data
 }
 
+function invalidTaskQuery() {
+  throw new VideoGenerationStoreError(
+    'VIDEO_GENERATION_INVALID_TASK_QUERY',
+    '任务列表查询参数无效',
+  )
+}
+
+function normalizeTaskQuery(current, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) invalidTaskQuery()
+  const allowedKeys = new Set([
+    'pageNum', 'pageSize', 'status', 'taskIds', 'model', 'serviceTier',
+  ])
+  if (Object.keys(patch).some((key) => !allowedKeys.has(key))) invalidTaskQuery()
+
+  const next = { ...current, ...patch }
+  if (!Number.isInteger(next.pageNum) || next.pageNum < 1 || next.pageNum > 500
+    || !Number.isInteger(next.pageSize) || next.pageSize < 1 || next.pageSize > 500) {
+    invalidTaskQuery()
+  }
+
+  const normalizeOptionalString = (value) => {
+    if (value == null || value === '') return undefined
+    if (typeof value !== 'string' || !value.trim() || value !== value.trim()) invalidTaskQuery()
+    return value
+  }
+  const status = normalizeOptionalString(next.status)
+  if (status !== undefined && !ARK_LIST_FILTER_STATUSES.includes(status)) invalidTaskQuery()
+  if (!Array.isArray(next.taskIds)) invalidTaskQuery()
+  const taskIds = [...new Set(next.taskIds.map((taskId) => {
+    if (typeof taskId !== 'string' || !TASK_ID_PATTERN.test(taskId)) invalidTaskQuery()
+    return taskId
+  }))]
+  const model = normalizeOptionalString(next.model)
+  const serviceTier = normalizeOptionalString(next.serviceTier)
+  if (serviceTier !== undefined && !['default', 'flex'].includes(serviceTier)) invalidTaskQuery()
+
+  return {
+    pageNum: next.pageNum,
+    pageSize: next.pageSize,
+    status,
+    taskIds,
+    model,
+    serviceTier,
+  }
+}
+
+function requireTaskList(data) {
+  const result = requireObject(data, '任务列表接口未返回有效数据')
+  if (!Array.isArray(result.items)
+    || !Number.isInteger(result.total)
+    || result.total < 0
+    || result.items.some((task) => (
+      !task
+      || typeof task !== 'object'
+      || Array.isArray(task)
+      || typeof task.id !== 'string'
+      || !TASK_ID_PATTERN.test(task.id)
+      || typeof task.status !== 'string'
+      || !ARK_TASK_STATUSES.has(task.status)
+      || (task.status === 'succeeded' && !isPlayableHttpsUrl(task.content?.video_url))
+    ))) {
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_API_MALFORMED',
+      '任务列表接口未返回有效数据',
+    )
+  }
+  return result
+}
+
+function mergeTasks(current, incoming) {
+  const byId = new Map(current.map((task) => [task.id, task]))
+  for (const task of incoming) {
+    byId.set(task.id, { ...byId.get(task.id), ...task })
+  }
+  return [...byId.values()].sort(
+    (a, b) => (b.created_at || 0) - (a.created_at || 0),
+  )
+}
+
+function getUpstreamStatus(error) {
+  return error?.details?.data?.error?.status
+}
+
+function isTransientTaskQueryError(error) {
+  const status = getUpstreamStatus(error)
+  return error?.code === 'VIDEO_GENERATION_NETWORK_ERROR'
+    || (Number.isInteger(status) && status >= 500 && status <= 599)
+}
+
 function isPlayableHttpsUrl(value) {
   if (typeof value !== 'string' || !value || value.trim() !== value) return false
   try {
@@ -149,16 +254,23 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
   const config = reactive(createDefaultConfig())
   const dryRunResult = ref(null)
   const taskList = ref([])
+  const taskQuery = reactive(createDefaultTaskQuery())
+  const taskTotal = ref(0)
+  const taskListPending = ref(false)
+  const taskActionPending = ref(false)
   const uploadPending = ref(false)
   const removePending = ref(false)
   const submitPending = ref(false)
   let nextRealIndex = 1
   let lifecycleEpoch = 0
+  let taskMutationEpoch = 0
   let draftRevision = 0
   let operationSequence = 0
   let activeUploadOperation = null
   let activeRemovalOperation = null
   let activeSubmissionOperation = null
+  let activeTaskListOperation = null
+  let activeTaskActionOperation = null
   const pollingTimers = new Map()
   const activePollingTasks = new Set()
   const pollingEpochByTask = new Map()
@@ -242,7 +354,142 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
       taskList.value.push({ id, status: 'queued' })
       recorded.push(id)
     }
+    if (recorded.length) taskMutationEpoch += 1
     return recorded
+  }
+
+  function upsertTask(task) {
+    const index = taskList.value.findIndex((item) => item.id === task.id)
+    if (index < 0) {
+      taskList.value.push(task)
+      return taskList.value.at(-1)
+    }
+    taskList.value[index] = { ...taskList.value[index], ...task }
+    return taskList.value[index]
+  }
+
+  function commitTask(task) {
+    const committed = upsertTask(task)
+    taskMutationEpoch += 1
+    return committed
+  }
+
+  function isCurrentTaskAction(captured, operationId) {
+    return captured.epoch === lifecycleEpoch
+      && activeTaskActionOperation === operationId
+  }
+
+  function assertCurrentTaskAction(captured, operationId) {
+    if (!isCurrentTaskAction(captured, operationId)) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_STALE_OPERATION',
+        '任务操作已结束，已忽略过期响应',
+      )
+    }
+  }
+
+  async function loadTaskHistory(patch = {}) {
+    const query = normalizeTaskQuery(taskQuery, patch)
+    const operationId = createOperationId()
+    const captured = {
+      ...captureLifecycleOperation(),
+      taskMutationEpoch,
+    }
+    activeTaskListOperation = operationId
+    taskListPending.value = true
+    try {
+      const data = requireTaskList(await unwrapApiCall(
+        listVideoGenerationTasks(query),
+      ))
+      assertCurrentLifecycle(captured)
+      if (captured.taskMutationEpoch !== taskMutationEpoch) {
+        throw new VideoGenerationStoreError(
+          'VIDEO_GENERATION_STALE_OPERATION',
+          '任务状态已更新，已忽略过期列表响应',
+        )
+      }
+      if (activeTaskListOperation !== operationId) {
+        throw new VideoGenerationStoreError(
+          'VIDEO_GENERATION_STALE_OPERATION',
+          '任务列表请求已被更新的请求取代',
+        )
+      }
+      taskList.value = mergeTasks(taskList.value, data.items)
+      Object.assign(taskQuery, query)
+      taskTotal.value = data.total
+      for (const task of data.items) {
+        if (TERMINAL_TASK_STATUSES.has(task.status)) stopPolling(task.id)
+      }
+      return data
+    } finally {
+      if (activeTaskListOperation === operationId) {
+        activeTaskListOperation = null
+        taskListPending.value = false
+      }
+    }
+  }
+
+  async function removeOrCancelTask(task) {
+    if (!task
+      || typeof task !== 'object'
+      || typeof task.id !== 'string'
+      || !TASK_ID_PATTERN.test(task.id)
+      || !DELETABLE_TASK_STATUSES.has(task.status)) {
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_TASK_ACTION_NOT_ALLOWED',
+        '当前任务状态不支持取消或删除',
+      )
+    }
+    if (activeTaskActionOperation !== null) throwPending()
+
+    const operationId = createOperationId()
+    const captured = captureLifecycleOperation()
+    const originalStatus = task.status
+    activeTaskActionOperation = operationId
+    taskActionPending.value = true
+    try {
+      await unwrapApiCall(deleteVideoGenerationTask({ taskId: task.id }))
+      assertCurrentTaskAction(captured, operationId)
+      stopPolling(task.id)
+      if (originalStatus === 'queued') {
+        return commitTask({ ...task, status: 'cancelled' })
+      }
+      taskList.value = taskList.value.filter((item) => item.id !== task.id)
+      taskMutationEpoch += 1
+      return task
+    } catch (error) {
+      if ([400, 409].includes(getUpstreamStatus(error))
+        && captured.epoch === lifecycleEpoch
+        && activeTaskActionOperation === operationId) {
+        const shouldResumePolling = activePollingTasks.has(task.id)
+          || pollingTimers.has(task.id)
+        stopPolling(task.id)
+        try {
+          const refreshedTask = await pollTask(
+            task.id,
+            undefined,
+            { captured, operationId },
+          )
+          assertCurrentTaskAction(captured, operationId)
+          if (shouldResumePolling && !TERMINAL_TASK_STATUSES.has(refreshedTask.status)) {
+            startPolling(task.id)
+          }
+        } catch (refreshError) {
+          if (shouldResumePolling
+            && isTransientTaskQueryError(refreshError)
+            && isCurrentTaskAction(captured, operationId)) {
+            startPolling(task.id)
+          }
+          // The DELETE error remains the actionable error even if the refresh also fails.
+        }
+      }
+      throw error
+    } finally {
+      if (activeTaskActionOperation === operationId) {
+        activeTaskActionOperation = null
+        taskActionPending.value = false
+      }
+    }
   }
 
   function addMedia(media) {
@@ -461,24 +708,54 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     )
   }
 
-  async function pollTask(taskId, pollingGuard) {
+  function assertCurrentTaskQueryGuard(taskId, pollingGuard, taskActionGuard, directGuard) {
+    if (taskActionGuard) {
+      assertCurrentTaskAction(taskActionGuard.captured, taskActionGuard.operationId)
+      return
+    }
+    if (directGuard) {
+      if (directGuard.lifecycleEpoch === lifecycleEpoch
+        && directGuard.pollingEpoch === getPollingEpoch(taskId)) return
+      throw new VideoGenerationStoreError(
+        'VIDEO_GENERATION_STALE_OPERATION',
+        '任务状态已更新，已忽略过期查询响应',
+      )
+    }
+    assertCurrentPollingGuard(taskId, pollingGuard)
+  }
+
+  async function pollTask(taskId, pollingGuard, taskActionGuard) {
     if (typeof taskId !== 'string' || !taskId.trim()) {
       throw new VideoGenerationStoreError(
         'VIDEO_GENERATION_INVALID_TASK_ID',
         '任务 ID 无效',
       )
     }
+    const directGuard = !pollingGuard && !taskActionGuard
+      ? { lifecycleEpoch, pollingEpoch: getPollingEpoch(taskId) }
+      : null
 
-    const data = requireObject(await unwrapApiCall(
-      getVideoGenerationTask({ taskId }),
-    ))
-    assertCurrentPollingGuard(taskId, pollingGuard)
+    let data
+    try {
+      data = requireObject(await unwrapApiCall(
+        getVideoGenerationTask({ taskId }),
+      ))
+    } catch (error) {
+      assertCurrentTaskQueryGuard(taskId, pollingGuard, taskActionGuard, directGuard)
+      if (DEFINITIVE_QUERY_STATUSES.has(getUpstreamStatus(error))) {
+        const existing = taskList.value.find((task) => task.id === taskId)
+        if (existing) commitTask({ id: taskId, status: 'unavailable' })
+        stopPolling(taskId)
+      }
+      throw error
+    }
+    assertCurrentTaskQueryGuard(taskId, pollingGuard, taskActionGuard, directGuard)
     const responseId = typeof data.id === 'string' && data.id
       ? data.id
       : typeof data.task_id === 'string' && data.task_id
         ? data.task_id
         : ''
-    const validStatus = typeof data.status === 'string' && TASK_STATUSES.has(data.status)
+    const validStatus = typeof data.status === 'string' && ARK_TASK_STATUSES.has(data.status)
     const validSucceededContent = data.status !== 'succeeded'
       || isPlayableHttpsUrl(data.content?.video_url)
     if (!responseId || responseId !== taskId || !validStatus || !validSucceededContent) {
@@ -488,18 +765,9 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
       )
     }
 
-    const index = taskList.value.findIndex((task) => task.id === taskId)
-    if (index < 0) {
-      taskList.value.push({ ...data, id: taskId })
-      return taskList.value.at(-1)
-    }
-
-    taskList.value[index] = {
-      ...taskList.value[index],
-      ...data,
-      id: taskId,
-    }
-    return taskList.value[index]
+    const task = commitTask({ ...data, id: taskId })
+    if (TERMINAL_TASK_STATUSES.has(task.status)) stopPolling(taskId)
+    return task
   }
 
   function getPollingInterval() {
@@ -581,6 +849,7 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     const normalizedTaskId = taskId.trim()
     if (!taskList.value.some((task) => task.id === normalizedTaskId)) {
       taskList.value.push({ id: normalizedTaskId, status: 'queued' })
+      taskMutationEpoch += 1
     }
     return startPolling(normalizedTaskId)
   }
@@ -590,19 +859,34 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     activeUploadOperation = null
     activeRemovalOperation = null
     activeSubmissionOperation = null
+    activeTaskListOperation = null
+    activeTaskActionOperation = null
     mediaList.value = []
     editorDoc.value = createEmptyDoc()
     Object.assign(config, createDefaultConfig())
     dryRunResult.value = null
     taskList.value = []
+    Object.assign(taskQuery, createDefaultTaskQuery())
+    taskTotal.value = 0
     stopPolling()
     uploadPending.value = false
     removePending.value = false
     submitPending.value = false
+    taskListPending.value = false
+    taskActionPending.value = false
     nextRealIndex = 1
   }
 
-  onScopeDispose(() => stopPolling())
+  function disposeStore() {
+    lifecycleEpoch += 1
+    activeTaskListOperation = null
+    activeTaskActionOperation = null
+    taskListPending.value = false
+    taskActionPending.value = false
+    stopPolling()
+  }
+
+  onScopeDispose(disposeStore)
 
   return {
     mediaList,
@@ -610,6 +894,10 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     config,
     dryRunResult,
     taskList,
+    taskQuery,
+    taskTotal,
+    taskListPending,
+    taskActionPending,
     uploadPending,
     removePending,
     submitPending,
@@ -619,6 +907,8 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     removeMedia,
     runDryRun,
     confirmRealGeneration,
+    loadTaskHistory,
+    removeOrCancelTask,
     pollTask,
     resumeTask,
     startPolling,
