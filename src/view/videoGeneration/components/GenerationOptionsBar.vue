@@ -35,15 +35,15 @@
         <label>
           <span>清晰度</span>
           <select data-testid="resolution-select" :value="config.resolution" @change="update('resolution', $event.target.value)">
-            <option value="720p">720P</option>
-            <option value="1080p">1080P</option>
+            <option v-for="resolution in ARK_RESOLUTIONS" :key="resolution" :value="resolution">
+              {{ resolution.toUpperCase() }}
+            </option>
           </select>
         </label>
         <label>
           <span>时长</span>
           <select data-testid="duration-select" :value="config.duration" @change="update('duration', Number($event.target.value))">
-            <option :value="5">5秒</option>
-            <option :value="10">10秒</option>
+            <option v-for="duration in durationOptions" :key="duration" :value="duration">{{ duration }}秒</option>
           </select>
         </label>
         <label>
@@ -59,6 +59,13 @@
             <option value="false">无声</option>
           </select>
         </label>
+        <details class="generation-advanced-options">
+          <summary>高级选项</summary>
+          <label><input type="checkbox" :checked="config.returnLastFrame" @change="update('returnLastFrame', $event.target.checked)">返回尾帧</label>
+          <label><input type="checkbox" :checked="config.watermark" @change="update('watermark', $event.target.checked)">AI 水印</label>
+          <label>任务超时<input data-testid="expires-input" type="number" min="3600" max="259200" :value="config.executionExpiresAfter" @change="update('executionExpiresAfter', Number($event.target.value))"></label>
+          <label>优先级<input data-testid="priority-input" type="number" min="0" max="9" :value="config.priority" @change="update('priority', Number($event.target.value))"></label>
+        </details>
       </div>
     </el-popover>
   </div>
@@ -67,6 +74,7 @@
 <script setup>
 import { computed } from 'vue'
 import { Connection, Operation } from '@element-plus/icons-vue'
+import { ARK_RATIOS, ARK_RESOLUTIONS } from '../domain/arkVideoContract.js'
 
 const props = defineProps({
   config: { type: Object, required: true },
@@ -74,12 +82,11 @@ const props = defineProps({
 
 const emit = defineEmits(['update'])
 
-const ratioOptions = [
-  { value: 'adaptive', label: '智能比例' },
-  { value: '16:9', label: '16:9' },
-  { value: '9:16', label: '9:16' },
-  { value: '1:1', label: '1:1' },
-]
+const ratioOptions = ARK_RATIOS.map((value) => ({
+  value,
+  label: value === 'adaptive' ? '智能比例' : value,
+}))
+const durationOptions = [-1, ...Array.from({ length: 12 }, (_, index) => index + 4)]
 
 const ratioLabel = computed(() => (
   ratioOptions.find((item) => item.value === props.config.ratio)?.label || '智能比例'

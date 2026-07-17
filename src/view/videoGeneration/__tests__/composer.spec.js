@@ -7,6 +7,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import VideoGeneration from '../index.vue'
+import GenerationOptionsBar from '../components/GenerationOptionsBar.vue'
 import GenerationTaskPanel from '../components/GenerationTaskPanel.vue'
 import { useVideoGenerationStore } from '../store'
 import * as videoGenerationApi from '@/api/videoGeneration'
@@ -118,7 +119,7 @@ describe('VideoGeneration composer', () => {
     expect(wrapper.text()).toContain('5秒')
     expect(wrapper.text()).toContain('1条')
     expect(wrapper.text()).toContain('有声')
-    expect(wrapper.text()).toContain('0.046 元/千 tokens')
+    expect(wrapper.text()).toContain('实际费用以方舟控制台为准')
     wrapper.unmount()
   })
 
@@ -168,6 +169,47 @@ describe('VideoGeneration composer', () => {
     expect(wrapper.text()).toContain('10秒')
     expect(wrapper.text()).toContain('4条')
     expect(wrapper.text()).toContain('无声')
+    wrapper.unmount()
+  })
+
+  it('emits advanced generation options as typed patches', async () => {
+    const wrapper = mount(GenerationOptionsBar, {
+      props: {
+        config: {
+          mode: 'reference_media',
+          ratio: 'adaptive',
+          resolution: '720p',
+          duration: 5,
+          count: 1,
+          generateAudio: true,
+          returnLastFrame: false,
+          watermark: false,
+          executionExpiresAfter: 172800,
+          priority: 0,
+        },
+      },
+      global: { plugins: [ElementPlus] },
+    })
+
+    await wrapper.find('[data-testid="generation-options-trigger"]').trigger('click')
+    await flush()
+    await wrapper.find('[data-testid="ratio-select"]').setValue('4:3')
+    await wrapper.find('[data-testid="resolution-select"]').setValue('480p')
+    await wrapper.find('[data-testid="duration-select"]').setValue('15')
+    await wrapper.find('input[type="checkbox"]').setValue(true)
+    await wrapper.findAll('input[type="checkbox"]')[1].setValue(true)
+    await wrapper.find('[data-testid="expires-input"]').setValue('3600')
+    await wrapper.find('[data-testid="priority-input"]').setValue('9')
+
+    expect(wrapper.emitted('update')).toEqual([
+      [{ ratio: '4:3' }],
+      [{ resolution: '480p' }],
+      [{ duration: 15 }],
+      [{ returnLastFrame: true }],
+      [{ watermark: true }],
+      [{ executionExpiresAfter: 3600 }],
+      [{ priority: 9 }],
+    ])
     wrapper.unmount()
   })
 

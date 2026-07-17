@@ -8,30 +8,18 @@ import {
   getVideoGenerationTask,
   uploadReference,
 } from '@/api/videoGeneration'
+import {
+  DEFAULT_GENERATION_CONFIG,
+  validateGenerationConfig,
+} from '../domain/arkVideoContract.js'
 
 const createEmptyDoc = () => ({
   type: 'doc',
   content: [{ type: 'paragraph' }],
 })
 
-const createDefaultConfig = () => ({
-  mode: 'reference_media',
-  ratio: 'adaptive',
-  resolution: '720p',
-  duration: 5,
-  count: 1,
-  generateAudio: true,
-})
-
-const CONFIG_KEYS = Object.keys(createDefaultConfig())
-const CONFIG_VALIDATORS = {
-  mode: (value) => value === 'reference_media',
-  ratio: (value) => ['adaptive', '16:9', '9:16', '1:1'].includes(value),
-  resolution: (value) => ['720p', '1080p'].includes(value),
-  duration: (value) => [5, 10].includes(value),
-  count: (value) => Number.isInteger(value) && value >= 1 && value <= 4,
-  generateAudio: (value) => typeof value === 'boolean',
-}
+const createDefaultConfig = () => ({ ...DEFAULT_GENERATION_CONFIG })
+const CONFIG_KEYS = Object.keys(DEFAULT_GENERATION_CONFIG)
 const TASK_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
 const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 const VISIBLE_POLL_INTERVAL_MS = 3000
@@ -44,6 +32,19 @@ export class VideoGenerationStoreError extends Error {
     this.code = code
     this.details = details
   }
+}
+
+function assertConfigPatch(current, patch) {
+  const next = { ...current, ...patch }
+  const { errors } = validateGenerationConfig(next)
+  if (errors.length) {
+    throw new VideoGenerationStoreError(
+      'VIDEO_GENERATION_INVALID_CONFIG',
+      '视频生成参数无效',
+      { errors },
+    )
+  }
+  return next
 }
 
 function unwrapEnvelope(response) {
@@ -265,21 +266,19 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
 
   function setConfig(patch) {
     const patchIsObject = patch && typeof patch === 'object' && !Array.isArray(patch)
-    const keys = patchIsObject ? Object.keys(patch) : []
-    const valid = patchIsObject && keys.every((key) => (
-      Object.hasOwn(CONFIG_VALIDATORS, key) && CONFIG_VALIDATORS[key](patch[key])
-    ))
-    if (!valid) {
+    if (!patchIsObject) {
       throw new VideoGenerationStoreError(
         'VIDEO_GENERATION_INVALID_CONFIG',
         '视频生成参数无效',
       )
     }
 
+    const keys = Object.keys(patch)
+    const next = assertConfigPatch(config, patch)
     let changed = false
     for (const key of keys) {
-      if (config[key] !== patch[key]) {
-        config[key] = patch[key]
+      if (config[key] !== next[key]) {
+        config[key] = next[key]
         changed = true
       }
     }

@@ -52,7 +52,7 @@
           >
             全部清空
           </button>
-          <span class="ark-composer-price">0.046 元/千 tokens</span>
+          <span class="ark-composer-price">实际费用以方舟控制台为准</span>
           <button
             class="ark-composer-submit"
             type="submit"

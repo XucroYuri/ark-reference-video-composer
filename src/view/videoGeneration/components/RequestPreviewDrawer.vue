@@ -44,7 +44,7 @@
           v-model="confirmed"
           data-testid="real-confirm-checkbox"
         >
-          确认创建 {{ config.count }} 条 {{ config.resolution.toUpperCase() }} / {{ config.duration }}秒 / {{ config.generateAudio ? '有声' : '无声' }}任务
+          确认创建 {{ config.count }} 个独立任务（{{ config.resolution.toUpperCase() }} / {{ config.duration }}秒 / {{ config.generateAudio ? '有声' : '无声' }}）
         </el-checkbox>
         <el-button
           v-if="canConfirm"

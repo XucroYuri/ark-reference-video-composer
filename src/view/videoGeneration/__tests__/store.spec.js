@@ -110,6 +110,36 @@ describe('useVideoGenerationStore', () => {
       duration: 5,
       count: 1,
       generateAudio: true,
+      returnLastFrame: false,
+      watermark: false,
+      executionExpiresAfter: 172800,
+      priority: 0,
+    })
+  })
+
+  it('accepts the complete selected Seedance 2.0 config', () => {
+    const store = useVideoGenerationStore()
+
+    store.setConfig({
+      ratio: '21:9',
+      resolution: '4k',
+      duration: -1,
+      generateAudio: false,
+      returnLastFrame: true,
+      watermark: true,
+      executionExpiresAfter: 3600,
+      priority: 9,
+    })
+
+    expect(store.config).toMatchObject({
+      ratio: '21:9',
+      resolution: '4k',
+      duration: -1,
+      generateAudio: false,
+      returnLastFrame: true,
+      watermark: true,
+      executionExpiresAfter: 3600,
+      priority: 9,
     })
   })
 
@@ -165,6 +195,10 @@ describe('useVideoGenerationStore', () => {
       duration: 5,
       count: 1,
       generateAudio: true,
+      returnLastFrame: false,
+      watermark: false,
+      executionExpiresAfter: 172800,
+      priority: 0,
     })
     expect(store.dryRunResult).toBeNull()
     expect(store.taskList).toEqual([])
@@ -200,9 +234,9 @@ describe('useVideoGenerationStore', () => {
     null,
     { injected: 'discard-me' },
     { mode: 'text_to_video' },
-    { ratio: '4:3' },
-    { resolution: '4k' },
-    { duration: 6 },
+    { ratio: '2:1' },
+    { resolution: '2k' },
+    { duration: 16 },
     { count: 0 },
     { count: 1.5 },
     { generateAudio: 'true' },
@@ -687,6 +721,10 @@ describe('useVideoGenerationStore', () => {
         duration: 5,
         count: 1,
         generateAudio: true,
+        returnLastFrame: false,
+        watermark: false,
+        executionExpiresAfter: 172800,
+        priority: 0,
       },
     })
 
@@ -859,6 +897,10 @@ describe('useVideoGenerationStore', () => {
         duration: 5,
         count: 1,
         generateAudio: true,
+        returnLastFrame: false,
+        watermark: false,
+        executionExpiresAfter: 172800,
+        priority: 0,
       },
       confirmationToken: 'current-token',
     })
