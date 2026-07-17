@@ -67,7 +67,19 @@
       </div>
     </section>
 
-    <GenerationTaskPanel :task-list="store.taskList" :submitting="store.submitPending" />
+    <p v-if="taskActionError" data-testid="task-action-error" role="alert">
+      {{ taskActionError }}
+    </p>
+    <GenerationTaskPanel
+      :task-list="store.taskList"
+      :total="store.taskTotal"
+      :loading="store.taskListPending"
+      :action-pending="store.taskActionPending"
+      :submitting="store.submitPending"
+      @refresh-history="refreshTaskHistory"
+      @refresh-task="refreshTask"
+      @remove-or-cancel="removeOrCancelTask"
+    />
     <RequestPreviewDrawer
       v-model="previewOpen"
       :result="store.dryRunResult"
@@ -93,6 +105,7 @@ import './styles/index.scss'
 const store = useVideoGenerationStore()
 const composerRef = ref(null)
 const previewOpen = ref(false)
+const taskActionError = ref('')
 const qaEnabled = import.meta.env.MODE === 'development'
 
 function docText(node) {
@@ -144,6 +157,36 @@ async function requestRemoveMedia(media) {
     if (!confirmed) return
   }
   await store.removeMedia(media.id)
+}
+
+async function runTaskAction(action, failureMessage) {
+  taskActionError.value = ''
+  try {
+    await action()
+  } catch {
+    taskActionError.value = failureMessage
+  }
+}
+
+function refreshTaskHistory(query) {
+  return runTaskAction(
+    () => store.loadTaskHistory(query),
+    '加载任务历史失败，请稍后重试。',
+  )
+}
+
+function refreshTask(taskId) {
+  return runTaskAction(
+    () => store.pollTask(taskId),
+    '刷新任务失败，请稍后重试。',
+  )
+}
+
+function removeOrCancelTask(task) {
+  return runTaskAction(
+    () => store.removeOrCancelTask(task),
+    '取消或删除任务失败，请稍后重试。',
+  )
 }
 
 function seedQaReferenceFromLocation() {
