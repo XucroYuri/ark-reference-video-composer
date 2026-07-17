@@ -172,7 +172,16 @@ npm run build
 - drawer 内所有标题边界为 `x=20 .. 355`；五个 `<pre>` 块均满足 `scrollWidth = clientWidth`（前三个 `333px`，后两个 `318px`），无横向滚动条。
 - 禁用的 `确认真实生成` 按钮保持可见；强制点击没有产生 `/createTask` 请求。最终浏览器 console 为 `0 error / 0 warning`。
 
-首次 Task 10 浏览器复验曾发现 520px drawer 在移动端左移裁剪、497px 参数面板造成横向溢出，以及 blockers 下真实生成按钮缺失。产品提交 `097893b fix: make video composer responsive` 修复了这些问题，本次浏览器回归确认几何与无成本边界全部通过。
+`c2862c3` 后的最终 drawer overflow 复验：
+
+- 桌面 `1440 × 1000`：document `clientWidth/scrollWidth = 1440/1440`；drawer `520/520`；drawer body `505/505`、`overflow-x: hidden`；长 JSON 的前三个 `<pre>` 为 `463/463`，媒体与请求块为 `448/448`。
+- 移动 `390 × 844`：document `390/390`；drawer `390/390`；drawer body `375/375`、`overflow-x: hidden`；长 JSON 的前三个 `<pre>` 为 `333/333`，媒体与请求块为 `318/318`。
+- 桌面和移动端 drawer body、preview 容器及所有长 JSON 块都满足 `scrollWidth <= clientWidth`，没有可见横向滚动条。
+- 移动参数 tooltip 仍为 `x=9 .. 375`、`366px`，打开时 document 保持 `375/375`；禁用真实生成按钮为 `1` 个且 `enabled=false`；`/createTask=0`；console `0 error / 0 warning`。
+
+产品提交 `c2862c3 fix: prevent preview drawer overflow` 的自动化证据：Composer `24` 项通过；全量 `14` 个测试文件、`390` 项测试通过；`npm run lint`、`npm run build` 与 `git diff --check` 均通过。
+
+首次 Task 10 浏览器复验曾发现移动裁剪、参数面板横向溢出和 blocked-action 缺失；后续又发现桌面 drawer body 横向滚动条。产品提交 `097893b` 与 `c2862c3` 已依次修复，本次最终浏览器复验确认响应式几何、drawer body overflow 与无成本边界全部通过。
 
 ## 12. 最终结论
 
