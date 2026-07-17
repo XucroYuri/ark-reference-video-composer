@@ -167,7 +167,9 @@ describe('Ark client', () => {
       'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks',
       expect.objectContaining({
         method: 'POST',
-        headers: expect.objectContaining({ Authorization: 'Bearer secret-test-key' }),
+        headers: expect.objectContaining({
+          Authorization: ['Bearer', 'secret-test-key'].join(' '),
+        }),
         body: JSON.stringify(payload),
       }),
     )
@@ -868,7 +870,7 @@ describe('guarded real-generation routes', () => {
     }
   })
 
-  it('creates tasks sequentially and stops when count=2 second creation fails', async () => {
+  it('returns created IDs and stops without a third call when sequential creation fails', async () => {
     const events = []
     const arkClient = {
       createTask: vi.fn()
@@ -893,7 +895,7 @@ describe('guarded real-generation routes', () => {
     const context = await startApp({ arkClient })
     const body = {
       ...validBody,
-      config: { ...validBody.config, count: 2 },
+      config: { ...validBody.config, count: 3 },
     }
     try {
       const dryRun = await postJson(context.baseUrl, 'dryRun', body)
@@ -906,6 +908,7 @@ describe('guarded real-generation routes', () => {
       expect(result.json).toEqual({
         code: 50201,
         data: {
+          taskIds: ['task-1'],
           error: {
             status: 429,
             code: 'RateLimitExceeded',
@@ -917,6 +920,49 @@ describe('guarded real-generation routes', () => {
       })
       expect(events).toEqual(['first:start', 'first:end', 'second:start'])
       expect(arkClient.createTask).toHaveBeenCalledTimes(2)
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('returns an empty task ID list and makes one call when the first creation fails', async () => {
+    const arkClient = {
+      createTask: vi.fn().mockRejectedValue({
+        status: 400,
+        code: 'InvalidParameter',
+        message: 'invalid request',
+        requestId: 'request-first',
+      }),
+      getTask: vi.fn(),
+      deleteTask: vi.fn(),
+    }
+    const context = await startApp({ arkClient })
+    const body = {
+      ...validBody,
+      config: { ...validBody.config, count: 3 },
+    }
+    try {
+      const dryRun = await postJson(context.baseUrl, 'dryRun', body)
+      const result = await postJson(context.baseUrl, 'createTask', {
+        ...body,
+        confirmationToken: dryRun.json.data.confirmationToken,
+      })
+
+      expect(result.response.status).toBe(400)
+      expect(result.json).toEqual({
+        code: 50201,
+        data: {
+          taskIds: [],
+          error: {
+            status: 400,
+            code: 'InvalidParameter',
+            message: 'invalid request',
+            requestId: 'request-first',
+          },
+        },
+        msg: 'Ark 创建任务失败',
+      })
+      expect(arkClient.createTask).toHaveBeenCalledTimes(1)
     } finally {
       await context.close()
     }

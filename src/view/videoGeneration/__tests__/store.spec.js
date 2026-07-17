@@ -998,12 +998,26 @@ describe('useVideoGenerationStore', () => {
     store.dryRunResult = { confirmationToken: 'single-use-token', realReady: true }
     videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
       code: 50201,
-      data: { taskIds: ['task-partial', 'task-partial'], error: { code: 'RateLimitExceeded' } },
+      data: {
+        taskIds: ['task-partial', 'task-partial'],
+        error: {
+          status: 429,
+          code: 'RateLimitExceeded',
+          message: 'request rate exceeded',
+          requestId: 'request-partial',
+        },
+      },
       msg: 'Ark 创建任务失败',
     })
 
     await expect(store.confirmRealGeneration('single-use-token')).rejects.toMatchObject({
       code: 'VIDEO_GENERATION_API_REJECTED',
+      details: {
+        data: {
+          taskIds: ['task-partial', 'task-partial'],
+          error: { status: 429, code: 'RateLimitExceeded' },
+        },
+      },
     })
 
     expect(videoGenerationApi.createVideoGenerationTask).toHaveBeenCalledTimes(1)

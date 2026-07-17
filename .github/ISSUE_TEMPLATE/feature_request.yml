@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a focused improvement to the reference implementation.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Which learning or migration problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and its API or safety implications.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Frontend
+        - Express adapter
+        - Ark conformance
+        - Documentation or tooling
+    validations:
+      required: true

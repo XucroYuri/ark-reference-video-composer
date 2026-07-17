@@ -1,7 +1,36 @@
 {
   "name": "ark-reference-video-composer",
   "version": "0.1.0",
-  "private": true,
+  "description": "Vue 3 reference implementation for guarded Seedance video generation with atomic media mentions.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XucroYuri/ark-reference-video-composer.git"
+  },
+  "homepage": "https://github.com/XucroYuri/ark-reference-video-composer#readme",
+  "bugs": {
+    "url": "https://github.com/XucroYuri/ark-reference-video-composer/issues"
+  },
+  "keywords": [
+    "vue",
+    "seedance",
+    "video-generation",
+    "tiptap",
+    "volcengine"
+  ],
+  "files": [
+    "src",
+    "server",
+    "scripts",
+    "docs",
+    "index.html",
+    "vite.config.js",
+    "vitest.config.js",
+    "vitest.setup.js"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "serve": "node scripts/serve.mjs",
@@ -9,7 +38,8 @@
     "dev:server": "node --watch server/index.js",
     "test": "vitest --run",
     "lint": "eslint . --max-warnings=0",
-    "build": "vite build --mode production"
+    "build": "vite build --mode production",
+    "check:secrets": "node scripts/check-secrets.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.1.0",

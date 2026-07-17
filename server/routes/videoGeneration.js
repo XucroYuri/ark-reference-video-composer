@@ -57,12 +57,12 @@ function normalizeArkError(error, apiKey) {
   }
 }
 
-function failArkRequest(res, localCode, message, error, apiKey) {
+function failArkRequest(res, localCode, message, error, apiKey, data = {}) {
   const normalized = normalizeArkError(error, apiKey)
   const status = normalized.status >= 400 && normalized.status <= 599
     ? normalized.status
     : 502
-  return fail(res, localCode, message, { error: normalized }, status)
+  return fail(res, localCode, message, { ...data, error: normalized }, status)
 }
 
 function getRuntimeBlockers(config) {
@@ -351,6 +351,7 @@ export function createVideoGenerationRouter({
             'Ark 创建任务失败',
             error,
             config.arkApiKey,
+            { taskIds },
           )
         }
       }

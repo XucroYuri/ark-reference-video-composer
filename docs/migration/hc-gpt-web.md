@@ -1,6 +1,6 @@
 # 迁移到 hc-gpt-web / hc-gpt-server 指南
 
-本文面向中文母语开发者，目标是把当前 MVP 以最低成本迁移到 `/Users/huachi/Code/huachi.online/hc-gpt-web`，并把本地 Express 适配层迁移到 `hc-gpt-server`。迁移时优先保持前端 payload 和响应包裹格式不变。
+本文面向中文母语开发者，目标是把当前参考实现以最低成本迁移到现有 Vue 3 前端和业务服务端。迁移时优先保持前端 payload 和响应包裹格式不变。
 
 ## 迁移原则
 
@@ -71,10 +71,12 @@
 
 ```js
 uploadReference(formData)
+registerRemoteReference({ url, name })
 deleteReference({ mediaId })
 dryRunVideoGeneration({ doc, mediaList, config })
 createVideoGenerationTask({ doc, mediaList, config, confirmationToken })
 getVideoGenerationTask({ taskId })
+listVideoGenerationTasks({ pageNum, pageSize, status, taskIds, model, serviceTier })
 deleteVideoGenerationTask({ taskId })
 ```
 
@@ -93,10 +95,12 @@ deleteVideoGenerationTask({ taskId })
 | 路由 | 作用 | 关键约束 |
 | --- | --- | --- |
 | `POST /videoGeneration/uploadReference` | 上传参考素材 | 校验 MIME、签名、大小、尺寸、可解码性；返回素材 ID 和预览 URL。 |
+| `POST /videoGeneration/registerRemoteReference` | 登记公网参考图 | 只允许安全公网 HTTPS URL；不预取远程内容；返回权威素材记录。 |
 | `POST /videoGeneration/deleteReference` | 删除参考素材 | 按素材 ID 删除；删除不存在素材应幂等。 |
 | `POST /videoGeneration/dryRun` | 生成预览请求 | 不调用 Ark；返回 serialization、request、blockers、realReady、confirmationToken。 |
 | `POST /videoGeneration/createTask` | 创建真实生成任务 | 必须校验开关、密钥、公开素材 URL、确认 token；不自动重试。 |
 | `GET /videoGeneration/getTask` | 查询任务状态 | 未启用真实生成时直接返回 runtime blocker。 |
+| `GET /videoGeneration/listTasks` | 查询最近任务 | 保持分页、重复 taskId、model、serviceTier 和受支持状态筛选语义。 |
 | `POST /videoGeneration/deleteTask` | 删除/取消任务 | 同样受真实生成 runtime gate 保护。 |
 
 ## Dry-run 返回结构
@@ -139,12 +143,16 @@ Dry-run 是正式接入前最重要的调试入口，建议保留当前结构：
 - [ ] `count` 个任务顺序创建，不做自动重试。
 - [ ] Ark 部分失败时返回已创建成功的 `taskIds`。
 - [ ] 查询轮询只查询已有 task，不重新创建任务。
+- [ ] 公网 URL 登记不发起服务端网络请求，创建时由 Ark 校验媒体。
+- [ ] 成功结果和尾帧明确提示 24 小时有效期，任务历史明确提示七天查询范围。
 
 ## 测试门禁
 
 迁移后至少运行：
 
 ```bash
+npm audit --omit=dev
+npm run check:secrets
 npm run test -- src/view/videoGeneration/__tests__
 npm run lint
 npm run build
@@ -159,6 +167,8 @@ npm run build
 - 真实生成缺少任一条件时返回 blocker。
 - 确认 token 只能消费一次。
 - Ark 部分失败时保留已创建 task ID。
+- 列表分页、筛选和重复 task ID 参数保持官方映射。
+- `expired` 停止轮询，DELETE 竞态后刷新权威状态。
 
 ## 开发者常见坑
 
@@ -168,12 +178,14 @@ npm run build
 4. **不要自动重试 `createTask`。** 付费任务的幂等性无法从网络错误中推断，重试可能造成重复扣费。
 5. **不要把本地 `/uploads` 当真实生成 URL。** 这只适合浏览器预览；真实生成需要公开 HTTPS 或 Ark 资产。
 6. **不要为了复刻方舟整页而扩大范围。** 当前 MVP 的迁移价值在 Composer 本身。
+7. **不要在服务端预取用户登记的 URL。** 当前入口只做结构校验，避免把参考适配层变成 SSRF 代理。
+8. **不要把 `expired` 当列表筛选值。** 它可出现在响应中，但不是当前列表筛选支持值。
 
 ## 建议的上线流程
 
 1. 先合入前端页面和 Dry-run 后端。
 2. 在测试环境上传真实图片，确认 `@图片1` 插入、清空、删除、撤销、Dry-run 都正确。
-3. 配置公开素材域名，但仍关闭 `APP_REAL_GENERATION_ENABLED`。
-4. 检查 Dry-run blocker 从 `MEDIA_NOT_PUBLIC` 消失。
+3. 使用公网 URL 工作流，或配置公开素材域名；仍保持 `APP_REAL_GENERATION_ENABLED` 关闭。
+4. 检查 Dry-run 中本地强校验与 URL 结构校验的提示准确，且 blocker 符合素材类型。
 5. 在明确费用和参数后，只执行一次最低成本真实任务：`720P / 5秒 / 1条 / 无声`。
 6. 成功后再开放给受控用户。
