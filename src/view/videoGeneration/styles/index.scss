@@ -38,9 +38,12 @@
 
 .reference-media-panel {
   position: relative;
-  width: 86px;
+  display: grid;
+  grid-template-columns: 86px 220px;
+  width: 318px;
   min-height: 78px;
-  flex: 0 0 86px;
+  gap: 12px;
+  flex: 0 0 318px;
 }
 
 .reference-media-strip {
@@ -166,15 +169,66 @@
 }
 
 .reference-error {
+  grid-column: 1 / -1;
   width: 220px;
   margin: 6px 0 0;
   color: #d03050;
   font-size: 12px;
 }
 
+.remote-reference-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: start;
+  gap: 6px 8px;
+  font-size: 11px;
+}
+
+.remote-reference-form label {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  color: #6e718c;
+}
+
+.remote-reference-form input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid #e0e0eb;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.remote-reference-form button {
+  grid-column: 2;
+  height: 24px;
+  padding: 0 8px;
+  color: #fff;
+  background: #5252ff;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 400 11px/18px inherit;
+}
+
+.remote-reference-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.remote-reference-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #d03050;
+}
+
 .ark-composer-prompt {
   flex: 1 1 0;
-  width: 744px;
+  min-width: 0;
   min-height: 78px;
   padding-top: 0;
   cursor: text;
@@ -205,7 +259,7 @@
 
 .ark-composer-prompt .prompt-composer {
   position: relative;
-  width: 744px;
+  width: 100%;
   min-height: 78px;
   padding-top: 6px;
   margin-top: -6px;
@@ -213,7 +267,7 @@
 }
 
 .ark-composer-prompt .prompt-composer .ProseMirror {
-  width: 744px;
+  width: 100%;
   min-height: 52px;
   color: #0b0b0f;
   font-size: 15px;

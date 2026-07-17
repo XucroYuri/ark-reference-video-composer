@@ -243,6 +243,21 @@ export function createVideoGenerationRouter({
     }
   })
 
+  router.post('/registerRemoteReference', async (req, res, next) => {
+    try {
+      const media = await mediaStore.registerRemote({
+        url: req.body?.url,
+        name: req.body?.name,
+      })
+      return ok(res, media, '公网参考素材登记成功')
+    } catch (error) {
+      if (error instanceof MediaStoreError) {
+        return fail(res, 40009, error.message, { reason: error.code })
+      }
+      return next(error)
+    }
+  })
+
   router.post('/deleteReference', async (req, res, next) => {
     const mediaId = req.body?.mediaId
     try {

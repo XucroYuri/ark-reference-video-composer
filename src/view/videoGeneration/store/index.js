@@ -6,6 +6,7 @@ import {
   deleteReference,
   dryRunVideoGeneration,
   getVideoGenerationTask,
+  registerRemoteReference,
   uploadReference,
 } from '@/api/videoGeneration'
 import {
@@ -308,6 +309,27 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     }
   }
 
+  async function addRemoteMedia(input) {
+    if (activeUploadOperation !== null
+      || activeRemovalOperation !== null
+      || activeSubmissionOperation !== null
+      || submitPending.value) throwPending()
+    const operationId = createOperationId()
+    const captured = captureLifecycleOperation()
+    activeUploadOperation = operationId
+    uploadPending.value = true
+    try {
+      const data = requireMedia(await unwrapApiCall(registerRemoteReference(input)))
+      assertCurrentLifecycle(captured)
+      return addMedia(data)
+    } finally {
+      if (activeUploadOperation === operationId) {
+        activeUploadOperation = null
+        uploadPending.value = false
+      }
+    }
+  }
+
   async function removeMedia(mediaId) {
     if (activeRemovalOperation !== null
       || activeUploadOperation !== null
@@ -592,6 +614,7 @@ export const useVideoGenerationStore = defineStore('videoGeneration', () => {
     removePending,
     submitPending,
     addMedia,
+    addRemoteMedia,
     uploadMedia,
     removeMedia,
     runDryRun,

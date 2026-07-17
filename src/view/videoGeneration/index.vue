@@ -2,10 +2,11 @@
   <main class="video-generation-page">
     <h1 class="video-generation-title">体验视频生成，让创意摇动</h1>
 
-    <form class="ark-composer-shell" @submit.prevent="submitDryRun">
+    <section class="ark-composer-shell">
       <div class="ark-composer-input-row">
         <ReferenceMediaPanel
           :media-list="store.mediaList"
+          :add-remote-media="store.addRemoteMedia"
           :upload-media="store.uploadMedia"
           :upload-pending="store.uploadPending"
           :remove-pending="store.removePending"
@@ -55,15 +56,16 @@
           <span class="ark-composer-price">实际费用以方舟控制台为准</span>
           <button
             class="ark-composer-submit"
-            type="submit"
+            type="button"
             aria-label="提交 Dry-run"
             :disabled="!canSubmit || store.submitPending"
+            @click="submitDryRun"
           >
             <el-icon><Top /></el-icon>
           </button>
         </div>
       </div>
-    </form>
+    </section>
 
     <GenerationTaskPanel :task-list="store.taskList" :submitting="store.submitPending" />
     <RequestPreviewDrawer

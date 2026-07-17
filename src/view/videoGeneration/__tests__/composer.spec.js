@@ -9,11 +9,13 @@ import { nextTick } from 'vue'
 import VideoGeneration from '../index.vue'
 import GenerationOptionsBar from '../components/GenerationOptionsBar.vue'
 import GenerationTaskPanel from '../components/GenerationTaskPanel.vue'
+import RemoteReferenceForm from '../components/RemoteReferenceForm.vue'
 import { useVideoGenerationStore } from '../store'
 import * as videoGenerationApi from '@/api/videoGeneration'
 
 vi.mock('@/api/videoGeneration', () => ({
   uploadReference: vi.fn(),
+  registerRemoteReference: vi.fn(),
   deleteReference: vi.fn(),
   dryRunVideoGeneration: vi.fn(),
   createVideoGenerationTask: vi.fn(),
@@ -36,6 +38,20 @@ const mediaEnvelope = {
   msg: '上传成功',
 }
 const deleteEnvelope = { code: 0, data: {}, msg: '删除成功' }
+const remoteUrl = 'https://images.example.test/boardwalk.jpg'
+const remoteEnvelope = {
+  code: 0,
+  data: {
+    id: '00000000-0000-4000-8000-000000000001',
+    source: 'remote_url',
+    kind: 'image',
+    name: 'Boardwalk',
+    status: 'ready',
+    previewUrl: remoteUrl,
+    remoteUrl,
+  },
+  msg: '公网参考素材登记成功',
+}
 const dryRunEnvelope = {
   code: 0,
   data: {
@@ -63,6 +79,14 @@ const dryRunEnvelope = {
 async function flush() {
   await Promise.resolve()
   await nextTick()
+}
+
+function createDeferred() {
+  let resolve
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 async function createImageFile() {
@@ -96,8 +120,10 @@ async function uploadReference(wrapper) {
 describe('VideoGeneration composer', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.clearAllMocks()
     vi.unstubAllGlobals()
     videoGenerationApi.uploadReference.mockResolvedValue(mediaEnvelope)
+    videoGenerationApi.registerRemoteReference.mockResolvedValue(remoteEnvelope)
     videoGenerationApi.deleteReference.mockResolvedValue(deleteEnvelope)
     videoGenerationApi.dryRunVideoGeneration.mockResolvedValue(dryRunEnvelope)
     videoGenerationApi.createVideoGenerationTask.mockResolvedValue({
@@ -123,6 +149,49 @@ describe('VideoGeneration composer', () => {
     wrapper.unmount()
   })
 
+  it('retains both remote fields when pending ends before the parent reports failure', async () => {
+    const wrapper = mount(RemoteReferenceForm, {
+      props: { pending: false, errorMessage: '', successSignal: 0 },
+    })
+
+    await wrapper.find('input[type="url"]').setValue(`  ${remoteUrl}  `)
+    await wrapper.find('input[type="text"]').setValue('  Boardwalk  ')
+    await wrapper.find('form').trigger('submit')
+    await wrapper.setProps({ pending: true })
+    await wrapper.setProps({ pending: false })
+    await nextTick()
+    await wrapper.setProps({ errorMessage: '登记失败' })
+
+    expect(wrapper.find('input[type="url"]').element.value).toBe(remoteUrl)
+    expect(wrapper.find('input[type="text"]').element.value).toBe('  Boardwalk  ')
+    expect(wrapper.text()).toContain('登记失败')
+    wrapper.unmount()
+  })
+
+  it('clears remote fields exactly once after an explicit parent success signal', async () => {
+    const wrapper = mount(RemoteReferenceForm, {
+      props: { pending: false, errorMessage: '', successSignal: 0 },
+    })
+
+    await wrapper.find('input[type="url"]').setValue(remoteUrl)
+    await wrapper.find('input[type="text"]').setValue('Boardwalk')
+    await wrapper.find('form').trigger('submit')
+
+    await wrapper.setProps({ successSignal: 1 })
+    expect(wrapper.find('input[type="url"]').element.value).toBe('')
+    expect(wrapper.find('input[type="text"]').element.value).toBe('')
+
+    await wrapper.find('input[type="url"]').setValue('https://images.example.test/next.jpg')
+    await wrapper.find('input[type="text"]').setValue('Next')
+    await wrapper.setProps({ pending: true })
+    await wrapper.setProps({ pending: false, successSignal: 2 })
+    expect(wrapper.find('input[type="url"]').element.value).toBe(
+      'https://images.example.test/next.jpg',
+    )
+    expect(wrapper.find('input[type="text"]').element.value).toBe('Next')
+    wrapper.unmount()
+  })
+
   it('uploads 小豆Q版.png and displays 图片1', async () => {
     const wrapper = mountComposer()
 
@@ -142,6 +211,67 @@ describe('VideoGeneration composer', () => {
     await flush()
 
     expect(wrapper.find('.ProseMirror').text()).toContain('@图片1')
+    wrapper.unmount()
+  })
+
+  it('registers a URL, mentions 图片1, and Dry-runs only its authoritative identity', async () => {
+    const registration = createDeferred()
+    videoGenerationApi.registerRemoteReference.mockReturnValue(registration.promise)
+    videoGenerationApi.dryRunVideoGeneration.mockResolvedValue({
+      ...dryRunEnvelope,
+      data: {
+        ...dryRunEnvelope.data,
+        serialization: {
+          ...dryRunEnvelope.data.serialization,
+          readablePrompt: '@图片1',
+          media: [{
+            id: remoteEnvelope.data.id,
+            realIndex: 1,
+            url: remoteUrl,
+          }],
+        },
+        request: {
+          ...dryRunEnvelope.data.request,
+          content: [
+            { type: 'text', text: '【图片 1】' },
+            { type: 'image_url', image_url: { url: remoteUrl } },
+          ],
+        },
+      },
+    })
+    const wrapper = mountComposer()
+
+    await wrapper.find('.remote-reference-form input[type="url"]').setValue(`  ${remoteUrl}  `)
+    await wrapper.find('.remote-reference-form input[type="text"]').setValue('  Boardwalk  ')
+    await wrapper.find('.remote-reference-form').trigger('submit')
+    await flush()
+
+    expect(wrapper.find('.remote-reference-form button').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.remote-reference-form input[type="url"]').element.value).toContain(remoteUrl)
+    registration.resolve(remoteEnvelope)
+    await flush()
+    await flush()
+
+    expect(videoGenerationApi.registerRemoteReference).toHaveBeenCalledWith({
+      url: remoteUrl,
+      name: 'Boardwalk',
+    })
+    expect(wrapper.find('.remote-reference-form input[type="url"]').element.value).toBe('')
+    expect(wrapper.find('.remote-reference-form input[type="text"]').element.value).toBe('')
+    expect(wrapper.text()).toContain('图片1')
+    expect(wrapper.find('.reference-thumbnail').attributes('referrerpolicy')).toBe('no-referrer')
+
+    await wrapper.find('.mention-trigger').trigger('click')
+    await flush()
+    expect(wrapper.find('.ProseMirror').text()).toContain('@图片1')
+
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+
+    const submitted = videoGenerationApi.dryRunVideoGeneration.mock.calls[0][0]
+    expect(submitted.mediaList).toEqual([{ id: remoteEnvelope.data.id, realIndex: 1 }])
+    expect(wrapper.text()).toContain(remoteUrl)
     wrapper.unmount()
   })
 
@@ -217,7 +347,7 @@ describe('VideoGeneration composer', () => {
     const wrapper = mountComposer()
 
     await uploadReference(wrapper)
-    await wrapper.find('form').trigger('submit')
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
     await flush()
     await flush()
 

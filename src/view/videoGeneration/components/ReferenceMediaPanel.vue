@@ -41,6 +41,7 @@
             class="reference-thumbnail"
             :src="item.previewUrl"
             :alt="item.name || `图片${item.realIndex}`"
+            :referrerpolicy="item.source === 'remote_url' ? 'no-referrer' : undefined"
           >
           <div v-else class="reference-thumbnail-fallback">
             <el-icon><Picture /></el-icon>
@@ -58,6 +59,12 @@
         </li>
       </ul>
     </div>
+    <RemoteReferenceForm
+      :pending="uploadPending"
+      :error-message="remoteErrorMessage"
+      :success-signal="remoteSuccessSignal"
+      @submit="handleRemoteSubmit"
+    />
     <p v-if="errorMessage" class="reference-error" role="alert">{{ errorMessage }}</p>
   </section>
 </template>
@@ -66,12 +73,15 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { Close, Picture, Plus } from '@element-plus/icons-vue'
 
+import RemoteReferenceForm from './RemoteReferenceForm.vue'
+
 const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const MAX_FILE_SIZE = 30 * 1024 * 1024
 
 const props = defineProps({
   mediaList: { type: Array, default: () => [] },
   uploadMedia: { type: Function, required: true },
+  addRemoteMedia: { type: Function, required: true },
   uploadPending: { type: Boolean, default: false },
   removePending: { type: Boolean, default: false },
 })
@@ -81,6 +91,8 @@ defineEmits(['remove'])
 const accept = 'image/png,image/jpeg,image/webp'
 const localItems = ref([])
 const errorMessage = ref('')
+const remoteErrorMessage = ref('')
+const remoteSuccessSignal = ref(0)
 
 const displayItems = computed(() => [
   ...props.mediaList,
@@ -136,6 +148,17 @@ async function handleUploadChange(uploadFile) {
     revokeItem(localItem)
   }
   return false
+}
+
+async function handleRemoteSubmit(input) {
+  if (props.uploadPending) return
+  remoteErrorMessage.value = ''
+  try {
+    await props.addRemoteMedia(input)
+    remoteSuccessSignal.value += 1
+  } catch (error) {
+    remoteErrorMessage.value = error?.message || '添加 URL 素材失败'
+  }
 }
 
 onBeforeUnmount(() => {

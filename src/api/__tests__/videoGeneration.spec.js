@@ -7,6 +7,7 @@ import {
   deleteVideoGenerationTask,
   dryRunVideoGeneration,
   getVideoGenerationTask,
+  registerRemoteReference,
   uploadReference,
 } from '../videoGeneration'
 
@@ -33,6 +34,22 @@ describe('video generation API adapter', () => {
       ...config.headers,
     }
     expect(interceptorMergedHeaders['Content-Type']).toBe('multipart/form-data')
+  })
+
+  it('posts a remote reference registration with the supplied object', () => {
+    const data = {
+      url: 'https://images.example.test/boardwalk.jpg',
+      name: 'Boardwalk',
+    }
+
+    registerRemoteReference(data)
+
+    expect(service).toHaveBeenCalledWith({
+      url: '/videoGeneration/registerRemoteReference',
+      method: 'post',
+      data,
+      validateStatus: expect.any(Function),
+    })
   })
 
   it('uses hc-gpt-web request shapes and the established silent-loading spelling', () => {

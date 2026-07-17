@@ -6,6 +6,7 @@ import { removeMentionsByMediaId, useVideoGenerationStore } from '../store'
 
 vi.mock('@/api/videoGeneration', () => ({
   uploadReference: vi.fn(),
+  registerRemoteReference: vi.fn(),
   deleteReference: vi.fn(),
   dryRunVideoGeneration: vi.fn(),
   createVideoGenerationTask: vi.fn(),
@@ -299,6 +300,43 @@ describe('useVideoGenerationStore', () => {
     })
 
     await expect(upload).resolves.toMatchObject({ id: 'server-media-1', realIndex: 1 })
+    expect(store.uploadPending).toBe(false)
+  })
+
+  it('registers authoritative remote media before assigning its index', async () => {
+    const store = useVideoGenerationStore()
+    const registration = createDeferred()
+    const input = {
+      url: 'https://images.example.test/boardwalk.jpg',
+      name: 'Boardwalk',
+    }
+    videoGenerationApi.registerRemoteReference.mockReturnValue(registration.promise)
+
+    const request = store.addRemoteMedia(input)
+
+    expect(store.uploadPending).toBe(true)
+    expect(store.mediaList).toEqual([])
+    expect(videoGenerationApi.registerRemoteReference).toHaveBeenCalledWith(input)
+
+    registration.resolve({
+      code: 0,
+      data: {
+        id: 'remote-media-1',
+        source: 'remote_url',
+        kind: 'image',
+        name: 'Boardwalk',
+        previewUrl: input.url,
+        remoteUrl: input.url,
+        status: 'ready',
+      },
+      msg: 'ok',
+    })
+
+    await expect(request).resolves.toMatchObject({
+      id: 'remote-media-1',
+      source: 'remote_url',
+      realIndex: 1,
+    })
     expect(store.uploadPending).toBe(false)
   })
 

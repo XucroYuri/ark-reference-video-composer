@@ -15,6 +15,7 @@ import {
   MAX_UPLOAD_BYTES,
   MediaStoreError,
 } from '../media/store.js'
+import { DEFAULT_GENERATION_CONFIG } from '../../src/view/videoGeneration/domain/arkVideoContract.js'
 
 const { unlinkSpy, writeFileSpy } = vi.hoisted(() => ({
   unlinkSpy: vi.fn(),
@@ -50,6 +51,15 @@ async function upload(baseUrl, buffer = PNG_300X300, {
   const response = await fetch(`${baseUrl}/api/videoGeneration/uploadReference`, {
     method: 'POST',
     body,
+  })
+  return { response, json: await response.json() }
+}
+
+async function postJson(baseUrl, route, data) {
+  const response = await fetch(`${baseUrl}/api/videoGeneration/${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(data),
   })
   return { response, json: await response.json() }
 }
@@ -436,6 +446,73 @@ describe('videoGeneration local media', () => {
     unlinkSpy.mockClear()
     expect(await restartedStore.remove(registered.id)).toBe(true)
     expect(unlinkSpy).not.toHaveBeenCalled()
+  })
+
+  it('registers a remote reference through the authoritative media store without fetching it', async () => {
+    const remoteUrl = 'https://images.example.test/boardwalk.jpg'
+    const media = {
+      id: '00000000-0000-4000-8000-000000000001',
+      source: 'remote_url',
+      kind: 'image',
+      name: 'Boardwalk',
+      previewUrl: remoteUrl,
+      remoteUrl,
+      status: 'ready',
+    }
+    const registerRemote = vi.spyOn(mediaStore, 'registerRemote').mockResolvedValue(media)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+
+    const result = await postJson(baseUrl, 'registerRemoteReference', {
+      url: remoteUrl,
+      name: 'Boardwalk',
+    })
+
+    expect(result.response.status).toBe(200)
+    expect(result.json).toEqual({ code: 0, data: media, msg: '公网参考素材登记成功' })
+    expect(registerRemote).toHaveBeenCalledWith({ url: remoteUrl, name: 'Boardwalk' })
+    expect(fetchSpy.mock.calls.some(([input]) => String(input) === remoteUrl)).toBe(false)
+  })
+
+  it('returns remote URL policy failures in the registration envelope', async () => {
+    const result = await postJson(baseUrl, 'registerRemoteReference', {
+      url: 'http://images.example.test/reference.png',
+      name: 'reference.png',
+    })
+
+    expect(result.response.status).toBe(400)
+    expect(result.json).toMatchObject({
+      code: 40009,
+      data: { reason: 'REMOTE_MEDIA_URL_NOT_PUBLIC' },
+    })
+  })
+
+  it('resolves a registered remote URL for Dry-run from client identity fields only', async () => {
+    const remoteUrl = 'https://images.example.test/authoritative-boardwalk.jpg'
+    const registration = await postJson(baseUrl, 'registerRemoteReference', {
+      url: remoteUrl,
+      name: 'Boardwalk',
+    })
+    const mediaId = registration.json.data.id
+
+    const dryRun = await postJson(baseUrl, 'dryRun', {
+      doc: {
+        type: 'doc',
+        content: [{
+          type: 'paragraph',
+          content: [{ type: 'mediaMention', attrs: { mediaId } }],
+        }],
+      },
+      mediaList: [{ id: mediaId, realIndex: 1 }],
+      config: DEFAULT_GENERATION_CONFIG,
+    })
+
+    expect(dryRun.response.status).toBe(200)
+    expect(dryRun.json.data.serialization.readablePrompt).toBe('@图片1')
+    expect(dryRun.json.data.request.content).toContainEqual({
+      type: 'image_url',
+      role: 'reference_image',
+      image_url: { url: remoteUrl },
+    })
   })
 
   it('translates remote URL policy failures into media-store errors', async () => {

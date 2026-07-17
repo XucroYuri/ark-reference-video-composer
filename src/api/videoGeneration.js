@@ -10,6 +10,13 @@ export const uploadReference = (formData) => service({
   validateStatus: resolveServerEnvelope,
 })
 
+export const registerRemoteReference = (data) => service({
+  url: '/videoGeneration/registerRemoteReference',
+  method: 'post',
+  data,
+  validateStatus: resolveServerEnvelope,
+})
+
 export const deleteReference = (data) => service({
   url: '/videoGeneration/deleteReference',
   method: 'post',
