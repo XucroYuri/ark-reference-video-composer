@@ -8,6 +8,10 @@ import {
   serializePrompt,
   validateRealSubmission,
 } from '../../src/view/videoGeneration/utils/requestBuilder.js'
+import {
+  DEFAULT_GENERATION_CONFIG,
+  validateGenerationConfig,
+} from '../../src/view/videoGeneration/domain/arkVideoContract.js'
 import { MAX_UPLOAD_BYTES, MediaStoreError } from '../media/store.js'
 
 export const ok = (res, data, msg = '操作成功') => res.json({ code: 0, data, msg })
@@ -18,10 +22,6 @@ export const fail = (res, code, msg, data = {}, status = 400) => (
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
-const RATIOS = new Set(['adaptive', '16:9', '9:16', '1:1'])
-const RESOLUTIONS = new Set(['720p', '1080p'])
-const DURATIONS = new Set([5, 10])
-const COUNTS = new Set([1, 2, 3, 4])
 
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
@@ -76,39 +76,6 @@ function getRuntimeBlockers(config) {
 
 function failRuntimeGate(res, blockers) {
   return fail(res, 40301, '真实生成条件不满足', { blockers }, 403)
-}
-
-function validateGenerationConfig(value) {
-  const errors = []
-  const add = (path, message) => errors.push({ path, message })
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { error: { reason: 'INVALID_CONFIG', errors: [{ path: 'config', message: '必须是对象' }] } }
-  }
-
-  if (value.mode !== 'reference_media') add('config.mode', '仅支持 reference_media')
-  if (!RATIOS.has(value.ratio)) add('config.ratio', '比例不在允许范围内')
-  if (!RESOLUTIONS.has(value.resolution)) add('config.resolution', '分辨率不在允许范围内')
-  if (!DURATIONS.has(value.duration)) {
-    add('config.duration', '时长必须是 5 或 10 秒')
-  }
-  if (!COUNTS.has(value.count)) {
-    add('config.count', '数量必须是 1 到 4 的整数')
-  }
-  if (typeof value.generateAudio !== 'boolean') {
-    add('config.generateAudio', '必须是布尔值')
-  }
-
-  if (errors.length > 0) return { error: { reason: 'INVALID_CONFIG', errors } }
-  return {
-    config: {
-      mode: value.mode,
-      ratio: value.ratio,
-      resolution: value.resolution,
-      duration: value.duration,
-      count: value.count,
-      generateAudio: value.generateAudio,
-    },
-  }
 }
 
 function validateEditorDoc(value) {
@@ -208,8 +175,13 @@ async function resolveAuthoritativeMedia(mediaList, mediaStore) {
 }
 
 async function prepareSubmission(body, config, mediaStore) {
-  const validatedConfig = validateGenerationConfig(body.config)
-  if (validatedConfig.error) return validatedConfig
+  const configInput = body.config && typeof body.config === 'object' && !Array.isArray(body.config)
+    ? { ...DEFAULT_GENERATION_CONFIG, ...body.config }
+    : body.config
+  const validatedConfig = validateGenerationConfig(configInput)
+  if (validatedConfig.errors.length > 0) {
+    return { error: { reason: 'INVALID_CONFIG', errors: validatedConfig.errors } }
+  }
 
   const validatedDoc = validateEditorDoc(body.doc)
   if (validatedDoc.error) return validatedDoc
@@ -221,7 +193,7 @@ async function prepareSubmission(body, config, mediaStore) {
   const request = buildArkRequest({
     doc: validatedDoc.doc,
     mediaList: authoritative.mediaList,
-    config: validatedConfig.config,
+    config: validatedConfig.value,
     model: config.arkModel,
   })
   const submissionBlockers = validateRealSubmission({
@@ -233,13 +205,13 @@ async function prepareSubmission(body, config, mediaStore) {
     },
   })
   return {
-    config: validatedConfig.config,
+    config: validatedConfig.value,
     doc: validatedDoc.doc,
     mediaList: authoritative.mediaList,
     serialization,
     request,
     blockers: [...getRuntimeBlockers(config), ...submissionBlockers],
-    confirmationHash: createConfirmationHash(request, validatedConfig.config.count),
+    confirmationHash: createConfirmationHash(request, validatedConfig.value.count),
   }
 }
 

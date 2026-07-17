@@ -713,6 +713,10 @@ describe('guarded real-generation routes', () => {
         resolution: '720p',
         duration: 5,
         generate_audio: false,
+        return_last_frame: false,
+        watermark: false,
+        execution_expires_after: 172800,
+        priority: 0,
       })
     } finally {
       await context.close()
@@ -903,6 +907,10 @@ describe('guarded real-generation routes', () => {
         resolution: '720p',
         duration: 5,
         generate_audio: false,
+        return_last_frame: false,
+        watermark: false,
+        execution_expires_after: 172800,
+        priority: 0,
       })
       expect(JSON.stringify(arkClient.createTask.mock.calls)).not.toContain('attacker.example')
     } finally {

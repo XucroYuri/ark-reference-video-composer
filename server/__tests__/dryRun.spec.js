@@ -25,6 +25,10 @@ const validBody = {
     duration: 5,
     count: 1,
     generateAudio: false,
+    returnLastFrame: false,
+    watermark: false,
+    executionExpiresAfter: 172800,
+    priority: 0,
   },
 }
 
@@ -85,6 +89,10 @@ describe('videoGeneration dryRun', () => {
           resolution: '720p',
           duration: 5,
           generate_audio: false,
+          return_last_frame: false,
+          watermark: false,
+          execution_expires_after: 172800,
+          priority: 0,
           content: [{ type: 'text', text: '小豆挥手' }],
         },
       },
@@ -96,6 +104,36 @@ describe('videoGeneration dryRun', () => {
     ])
     expect(arkClient.createTask).not.toHaveBeenCalled()
     expect(arkClient.getTask).not.toHaveBeenCalled()
+  })
+
+  it('applies the shared advanced defaults to legacy config payloads', async () => {
+    const {
+      returnLastFrame,
+      watermark,
+      executionExpiresAfter,
+      priority,
+      ...legacyConfig
+    } = validBody.config
+    void returnLastFrame
+    void watermark
+    void executionExpiresAfter
+    void priority
+
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...validBody, config: legacyConfig }),
+    })
+    const json = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(json.data.request).toMatchObject({
+      return_last_frame: false,
+      watermark: false,
+      execution_expires_after: 172800,
+      priority: 0,
+    })
+    expect(arkClient.createTask).not.toHaveBeenCalled()
   })
 
   it('reports realReady only when the pure validation has no blockers', async () => {
@@ -232,6 +270,10 @@ describe('videoGeneration dryRun', () => {
           duration: '5',
           count: 0,
           generateAudio: 'false',
+          returnLastFrame: false,
+          watermark: false,
+          executionExpiresAfter: 172800,
+          priority: 0,
         },
       }),
     })
@@ -252,6 +294,63 @@ describe('videoGeneration dryRun', () => {
       'config.generateAudio',
     ])
     expect(arkClient.createTask).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['generateAudio', 'true'],
+    ['returnLastFrame', 1],
+    ['watermark', null],
+    ['executionExpiresAfter', 3599],
+    ['executionExpiresAfter', 259201],
+    ['executionExpiresAfter', 3600.5],
+    ['priority', -1],
+    ['priority', 10],
+    ['priority', 0.5],
+  ])('rejects malformed advanced config %s=%j before an Ark call', async (field, value) => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        config: { ...validBody.config, [field]: value },
+      }),
+    })
+    const json = await response.json()
+
+    expect(response.status).toBe(400)
+    expect(json).toMatchObject({
+      code: 40006,
+      data: { reason: 'INVALID_CONFIG' },
+    })
+    expect(json.data.errors).toContainEqual(expect.objectContaining({ path: `config.${field}` }))
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+    expect(arkClient.getTask).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['frames', 57],
+    ['seed', 1],
+    ['serviceTier', 'flex'],
+    ['callback', { url: 'https://attacker.example/callback' }],
+  ])('rejects unsupported config key %s before an Ark call', async (field, value) => {
+    const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...validBody,
+        config: { ...validBody.config, [field]: value },
+      }),
+    })
+    const json = await response.json()
+
+    expect(response.status).toBe(400)
+    expect(json).toMatchObject({
+      code: 40006,
+      data: { reason: 'INVALID_CONFIG' },
+    })
+    expect(json.data.errors).toContainEqual(expect.objectContaining({ path: `config.${field}` }))
+    expect(arkClient.createTask).not.toHaveBeenCalled()
+    expect(arkClient.getTask).not.toHaveBeenCalled()
   })
 
   it('rejects malformed editor document shapes before serialization', async () => {
@@ -346,15 +445,23 @@ describe('videoGeneration dryRun', () => {
     ['ratio', '16:9'],
     ['ratio', '9:16'],
     ['ratio', '1:1'],
+    ['ratio', '4:3'],
+    ['ratio', '3:4'],
+    ['ratio', '21:9'],
+    ['resolution', '480p'],
     ['resolution', '720p'],
     ['resolution', '1080p'],
+    ['resolution', '4k'],
+    ['duration', -1],
+    ['duration', 4],
     ['duration', 5],
     ['duration', 10],
+    ['duration', 15],
     ['count', 1],
     ['count', 2],
     ['count', 3],
     ['count', 4],
-  ])('accepts approved cost boundary %s=%s', async (field, value) => {
+  ])('accepts Seedance 2.0 boundary %s=%s', async (field, value) => {
     const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -368,16 +475,11 @@ describe('videoGeneration dryRun', () => {
   })
 
   it.each([
-    ['ratio', '21:9'],
-    ['ratio', '4:3'],
-    ['ratio', '3:4'],
-    ['resolution', '480p'],
-    ['resolution', '4k'],
-    ['duration', 4],
-    ['duration', 15],
+    ['duration', 3],
+    ['duration', 16],
     ['count', 5],
     ['count', 8],
-  ])('rejects unapproved cost boundary %s=%s', async (field, value) => {
+  ])('rejects unsupported Seedance boundary %s=%s', async (field, value) => {
     const response = await fetch(`${baseUrl}/api/videoGeneration/dryRun`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

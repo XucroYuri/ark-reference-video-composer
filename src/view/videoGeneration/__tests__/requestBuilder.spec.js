@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_GENERATION_CONFIG } from '../domain/arkVideoContract.js'
 import {
   buildArkRequest,
   collectCanonicalMedia,
@@ -64,7 +65,7 @@ describe('requestBuilder', () => {
       doc,
       mediaList: [image1, image2],
       model: 'doubao-seedance-2-0-260128',
-      config: { mode: 'reference_media', ratio: 'adaptive', resolution: '720p', duration: 5, count: 1, generateAudio: false },
+      config: { ...DEFAULT_GENERATION_CONFIG, generateAudio: false },
     })
     expect(result.content).toEqual([
       { type: 'text', text: '让 【图片 1】 模仿 【图片 2】 挥手，再让 【图片 1】 转身' },
@@ -77,7 +78,47 @@ describe('requestBuilder', () => {
       resolution: '720p',
       duration: 5,
       generate_audio: false,
+      return_last_frame: false,
+      watermark: false,
+      execution_expires_after: 172800,
+      priority: 0,
     })
+  })
+
+  it('projects all supported Seedance options without unsupported request fields', () => {
+    const request = buildArkRequest({
+      doc,
+      mediaList: [image1, image2],
+      model: 'doubao-seedance-2-0-260128',
+      config: {
+        ...DEFAULT_GENERATION_CONFIG,
+        ratio: '21:9',
+        resolution: '4k',
+        duration: -1,
+        generateAudio: false,
+        returnLastFrame: true,
+        watermark: true,
+        executionExpiresAfter: 3600,
+        priority: 9,
+        frames: 57,
+        seed: 1,
+        serviceTier: 'flex',
+      },
+    })
+
+    expect(request).toMatchObject({
+      ratio: '21:9',
+      resolution: '4k',
+      duration: -1,
+      generate_audio: false,
+      return_last_frame: true,
+      watermark: true,
+      execution_expires_after: 3600,
+      priority: 9,
+    })
+    expect(request).not.toHaveProperty('frames')
+    expect(request).not.toHaveProperty('seed')
+    expect(request).not.toHaveProperty('serviceTier')
   })
 
   it('preserves paragraph and hard-break newlines in every prompt projection', () => {
@@ -129,13 +170,13 @@ describe('requestBuilder', () => {
     ])
   })
 
-  it('keeps an explicit text content item when the editor text is empty', () => {
+  it('omits a blank text content item when references provide the content', () => {
     const emptyDoc = { type: 'doc', content: [{ type: 'paragraph' }] }
     const request = buildArkRequest({
       doc: emptyDoc,
       mediaList: [image1],
       model: 'doubao-seedance-2-0-260128',
-      config: { ratio: 'adaptive', resolution: '720p', duration: 5, generateAudio: false },
+      config: { ...DEFAULT_GENERATION_CONFIG, generateAudio: false },
     })
 
     expect(serializePrompt(emptyDoc, [image1])).toMatchObject({
@@ -143,8 +184,9 @@ describe('requestBuilder', () => {
       templatePrompt: '',
       modelPrompt: '',
     })
-    expect(request.content[0]).toEqual({ type: 'text', text: '' })
-    expect(request.content[1].image_url.url).toBe('https://media.example/xiaodou.png')
+    expect(request.content).toEqual([
+      { type: 'image_url', role: 'reference_image', image_url: { url: 'https://media.example/xiaodou.png' } },
+    ])
   })
 
   it('prefers an Ark asset URL over a remote URL', () => {
@@ -245,6 +287,21 @@ describe('requestBuilder', () => {
       code: 'EMPTY_CONTENT',
       message: '请填写提示词或添加参考内容',
     }])
+  })
+
+  it('blocks a real submission with more than nine reference images', () => {
+    const mediaList = Array.from({ length: 10 }, (_value, index) => ({
+      ...image1,
+      id: `media-${index + 1}`,
+      realIndex: index + 1,
+      remoteUrl: `https://media.example/${index + 1}.png`,
+    }))
+    const serialization = serializePrompt({ type: 'doc', content: [{ type: 'paragraph' }] }, mediaList)
+
+    expect(validateRealSubmission({
+      serialization,
+      runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },
+    })).toContainEqual(expect.objectContaining({ code: 'REFERENCE_IMAGE_COUNT' }))
   })
 
   it('blocks every canonical media record whose status is not exactly ready', () => {
@@ -349,7 +406,7 @@ describe('requestBuilder', () => {
   it.each([
     ['video', '视频'],
     ['audio', '音频'],
-  ])('never encodes an unsupported %s reference as image_url', (kind, label) => {
+  ])('blocks an unsupported %s reference before an Ark submission', (kind, label) => {
     const media = { ...image1, id: `${kind}-1`, kind, name: `${kind}.mp4`, realIndex: 1 }
     const mediaDoc = {
       type: 'doc',
@@ -378,7 +435,10 @@ describe('requestBuilder', () => {
       modelPrompt: `让 【${label} 1】`,
       errors: [expectedError],
     })
-    expect(request.content).toEqual([{ type: 'text', text: `让 【${label} 1】` }])
+    expect(request.content).toEqual([
+      { type: 'text', text: `让 【${label} 1】` },
+      { type: 'image_url', role: 'reference_image', image_url: { url: 'https://media.example/xiaodou.png' } },
+    ])
     expect(validateRealSubmission({
       serialization,
       runtime: { realGenerationEnabled: true, arkApiKey: 'server-only-key' },

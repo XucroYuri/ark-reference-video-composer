@@ -1,3 +1,5 @@
+import { pickArkRequestOptions } from '../domain/arkVideoContract.js'
+
 const TOKEN_BY_KIND = {
   image: '图片',
   video: '视频',
@@ -228,17 +230,16 @@ export function buildArkRequest({ doc, mediaList, config, model }) {
   return {
     model,
     content: [
-      { type: 'text', text: serialization.modelPrompt },
-      ...serialization.media.filter((item) => item.kind === 'image').map((item) => ({
+      ...(serialization.modelPrompt.trim()
+        ? [{ type: 'text', text: serialization.modelPrompt }]
+        : []),
+      ...serialization.media.map((item) => ({
         type: 'image_url',
         role: 'reference_image',
         image_url: { url: item.url },
       })),
     ],
-    ratio: config.ratio,
-    resolution: config.resolution,
-    duration: config.duration,
-    generate_audio: config.generateAudio,
+    ...pickArkRequestOptions(config),
   }
 }
 
@@ -272,6 +273,13 @@ export function validateRealSubmission({ serialization, runtime }) {
     addBlocker({
       code: 'ARK_API_KEY_MISSING',
       message: '服务端未配置 ARK_API_KEY',
+    })
+  }
+
+  if (serialization?.media?.length > 9) {
+    addBlocker({
+      code: 'REFERENCE_IMAGE_COUNT',
+      message: '参考图片数量不能超过 9 张',
     })
   }
 
