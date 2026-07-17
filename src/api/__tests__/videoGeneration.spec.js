@@ -7,6 +7,7 @@ import {
   deleteVideoGenerationTask,
   dryRunVideoGeneration,
   getVideoGenerationTask,
+  listVideoGenerationTasks,
   registerRemoteReference,
   uploadReference,
 } from '../videoGeneration'
@@ -101,5 +102,37 @@ describe('video generation API adapter', () => {
       expect(config.validateStatus(599)).toBe(true)
       expect(config.validateStatus(600)).toBe(false)
     }
+  })
+
+  it('lists video generation tasks with ordered repeated URLSearchParams', () => {
+    listVideoGenerationTasks({
+      pageNum: 2,
+      pageSize: 50,
+      status: 'failed',
+      taskIds: ['task-1', 'task-2'],
+      model: 'ep-1',
+      serviceTier: 'flex',
+    })
+
+    const config = service.mock.calls[0][0]
+    expect(config).toEqual({
+      url: '/videoGeneration/listTasks',
+      method: 'get',
+      params: expect.any(URLSearchParams),
+      donNotShowLoading: true,
+      validateStatus: expect.any(Function),
+    })
+    expect(config.params.toString()).toBe(
+      'pageNum=2&pageSize=50&status=failed&taskId=task-1&taskId=task-2&model=ep-1&serviceTier=flex',
+    )
+    expect(config.params.getAll('taskId')).toEqual(['task-1', 'task-2'])
+    expect(config.validateStatus(429)).toBe(true)
+  })
+
+  it('lists video generation tasks with documented pagination defaults', () => {
+    listVideoGenerationTasks()
+
+    const config = service.mock.calls[0][0]
+    expect(config.params.toString()).toBe('pageNum=1&pageSize=20')
   })
 })

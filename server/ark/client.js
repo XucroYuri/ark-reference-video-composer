@@ -1,3 +1,5 @@
+import { ARK_LIST_FILTER_STATUSES } from '../../src/view/videoGeneration/domain/arkVideoContract.js'
+
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 const APPROVED_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3'
 
@@ -19,6 +21,53 @@ function assertTaskId(id) {
       message: '任务 ID 格式无效',
     })
   }
+}
+
+function throwInvalidList(field) {
+  throw new ArkClientError({
+    status: 400,
+    code: 'INVALID_TASK_LIST_FILTER',
+    message: `任务列表参数无效: ${field}`,
+  })
+}
+
+function buildTaskListPath({
+  pageNum = 1,
+  pageSize = 20,
+  status,
+  taskIds = [],
+  model,
+  serviceTier,
+} = {}) {
+  if (!Number.isInteger(pageNum) || pageNum < 1 || pageNum > 500) {
+    throwInvalidList('page_num')
+  }
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 500) {
+    throwInvalidList('page_size')
+  }
+  if (status != null && !ARK_LIST_FILTER_STATUSES.includes(status)) {
+    throwInvalidList('filter.status')
+  }
+  if (!Array.isArray(taskIds)) throwInvalidList('filter.task_ids')
+  if (model != null && (typeof model !== 'string' || !model.trim())) {
+    throwInvalidList('filter.model')
+  }
+  if (serviceTier != null && !['default', 'flex'].includes(serviceTier)) {
+    throwInvalidList('filter.service_tier')
+  }
+
+  const query = new URLSearchParams({
+    page_num: String(pageNum),
+    page_size: String(pageSize),
+  })
+  if (status) query.set('filter.status', status)
+  for (const taskId of taskIds) {
+    assertTaskId(taskId)
+    query.append('filter.task_ids', taskId)
+  }
+  if (model) query.set('filter.model', model)
+  if (serviceTier) query.set('filter.service_tier', serviceTier)
+  return `/contents/generations/tasks?${query}`
 }
 
 async function cancelResponseBody(response) {
@@ -218,6 +267,9 @@ export function createArkClient({
     async getTask(id) {
       assertTaskId(id)
       return request(`/contents/generations/tasks/${encodeURIComponent(id)}`, { method: 'GET' })
+    },
+    async listTasks(filters) {
+      return request(buildTaskListPath(filters), { method: 'GET' })
     },
     async deleteTask(id) {
       assertTaskId(id)

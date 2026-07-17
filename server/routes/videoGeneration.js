@@ -57,6 +57,14 @@ function normalizeArkError(error, apiKey) {
   }
 }
 
+function failArkRequest(res, localCode, message, error, apiKey) {
+  const normalized = normalizeArkError(error, apiKey)
+  const status = normalized.status >= 400 && normalized.status <= 599
+    ? normalized.status
+    : 502
+  return fail(res, localCode, message, { error: normalized }, status)
+}
+
 function getRuntimeBlockers(config) {
   const blockers = []
   if (!config?.realGenerationEnabled) {
@@ -337,10 +345,13 @@ export function createVideoGenerationRouter({
           }
           taskIds.push(taskId)
         } catch (error) {
-          return fail(res, 50201, 'Ark 创建任务失败', {
-            taskIds,
-            error: normalizeArkError(error, config.arkApiKey),
-          }, 502)
+          return failArkRequest(
+            res,
+            50201,
+            'Ark 创建任务失败',
+            error,
+            config.arkApiKey,
+          )
         }
       }
       return ok(res, {
@@ -363,9 +374,51 @@ export function createVideoGenerationRouter({
       const task = await arkClient.getTask(taskId)
       return ok(res, task, '任务状态查询成功')
     } catch (error) {
-      return fail(res, 50202, 'Ark 任务查询失败', {
-        error: normalizeArkError(error, config.arkApiKey),
-      }, 502)
+      return failArkRequest(res, 50202, 'Ark 任务查询失败', error, config.arkApiKey)
+    }
+  })
+
+  router.get('/listTasks', async (req, res) => {
+    try {
+      const runtimeBlockers = getRuntimeBlockers(config)
+      if (runtimeBlockers.length > 0) return failRuntimeGate(res, runtimeBlockers)
+
+      const scalarFields = ['pageNum', 'pageSize', 'status', 'model', 'serviceTier']
+      const repeatedScalar = scalarFields.find((field) => Array.isArray(req.query[field]))
+      if (repeatedScalar) {
+        return fail(
+          res,
+          40010,
+          '任务列表查询参数无效',
+          { reason: 'INVALID_LIST_QUERY', field: repeatedScalar },
+        )
+      }
+      if (req.query.status === '') {
+        return fail(
+          res,
+          40010,
+          '任务列表查询参数无效',
+          { reason: 'INVALID_LIST_QUERY', field: 'status' },
+        )
+      }
+
+      const rawTaskIds = req.query.taskId
+      const taskIds = rawTaskIds == null
+        ? []
+        : Array.isArray(rawTaskIds) ? rawTaskIds : [rawTaskIds]
+      const pageNum = req.query.pageNum == null ? 1 : Number(req.query.pageNum)
+      const pageSize = req.query.pageSize == null ? 20 : Number(req.query.pageSize)
+      const data = await arkClient.listTasks({
+        pageNum,
+        pageSize,
+        status: req.query.status,
+        taskIds,
+        model: req.query.model,
+        serviceTier: req.query.serviceTier,
+      })
+      return ok(res, data, '任务列表查询成功')
+    } catch (error) {
+      return failArkRequest(res, 50204, 'Ark 任务列表查询失败', error, config.arkApiKey)
     }
   })
 
@@ -380,9 +433,7 @@ export function createVideoGenerationRouter({
       const task = await arkClient.deleteTask(taskId)
       return ok(res, task, '任务删除成功')
     } catch (error) {
-      return fail(res, 50203, 'Ark 任务删除失败', {
-        error: normalizeArkError(error, config.arkApiKey),
-      }, 502)
+      return failArkRequest(res, 50203, 'Ark 任务删除失败', error, config.arkApiKey)
     }
   })
 

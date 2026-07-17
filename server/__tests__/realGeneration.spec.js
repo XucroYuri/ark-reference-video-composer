@@ -31,6 +31,7 @@ async function startApp(overrides = {}) {
   const arkClient = overrides.arkClient || {
     createTask: vi.fn(),
     getTask: vi.fn(),
+    listTasks: vi.fn(),
     deleteTask: vi.fn(),
   }
   const mediaStore = overrides.mediaStore || {
@@ -203,6 +204,121 @@ describe('Ark client', () => {
       'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task%3A1',
       expect.objectContaining({ method: 'DELETE' }),
     )
+  })
+
+  it('lists tasks with repeated task-id filters in the official query order', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      items: [],
+      total: 0,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+
+    await expect(client.listTasks({
+      pageNum: 2,
+      pageSize: 20,
+      status: 'failed',
+      taskIds: ['task-1', 'task-2'],
+      model: 'ep-1',
+      serviceTier: 'default',
+    })).resolves.toEqual({ items: [], total: 0 })
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks?page_num=2&page_size=20&filter.status=failed&filter.task_ids=task-1&filter.task_ids=task-2&filter.model=ep-1&filter.service_tier=default',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('body')
+  })
+
+  it('lists tasks without truncating valid repeated task-id filters', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      items: [],
+      total: 0,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+    const taskIds = Array.from({ length: 501 }, (_, index) => `task-${index + 1}`)
+
+    await client.listTasks({ taskIds })
+
+    const requestUrl = new URL(fetchImpl.mock.calls[0][0])
+    expect(requestUrl.searchParams.getAll('filter.task_ids')).toEqual(taskIds)
+  })
+
+  it.each([
+    [{ pageNum: 0 }, 'INVALID_TASK_LIST_FILTER', 'page_num'],
+    [{ pageNum: 501 }, 'INVALID_TASK_LIST_FILTER', 'page_num'],
+    [{ pageSize: 0 }, 'INVALID_TASK_LIST_FILTER', 'page_size'],
+    [{ pageSize: 501 }, 'INVALID_TASK_LIST_FILTER', 'page_size'],
+    [{ status: '' }, 'INVALID_TASK_LIST_FILTER', 'filter.status'],
+    [{ status: 'expired' }, 'INVALID_TASK_LIST_FILTER', 'filter.status'],
+    [{ taskIds: ['../task'] }, 'INVALID_TASK_ID', '任务 ID'],
+    [{ taskIds: 'task-1' }, 'INVALID_TASK_LIST_FILTER', 'filter.task_ids'],
+    [{ model: ['ep-1'] }, 'INVALID_TASK_LIST_FILTER', 'filter.model'],
+    [{ serviceTier: 'premium' }, 'INVALID_TASK_LIST_FILTER', 'filter.service_tier'],
+  ])('lists tasks rejects invalid filter %s before requesting Ark', async (
+    filters,
+    code,
+    message,
+  ) => {
+    const fetchImpl = vi.fn()
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+
+    await expect(client.listTasks(filters)).rejects.toMatchObject({
+      status: 400,
+      code,
+      message: expect.stringContaining(message),
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('lists tasks after recursively sanitizing the Ark collection response', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      items: [{
+        id: 'task-1',
+        status: 'running',
+        token: 'upstream-secret',
+        note: 'secret-test-key and Bearer private-token',
+      }],
+      total: 1,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const client = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+
+    const result = await client.listTasks()
+
+    expect(result).toEqual({
+      items: [{
+        id: 'task-1',
+        status: 'running',
+        note: '[REDACTED] and Bearer [REDACTED]',
+      }],
+      total: 1,
+    })
+    expect(JSON.stringify(result)).not.toContain('secret-test-key')
+    expect(JSON.stringify(result)).not.toContain('private-token')
+    expect(JSON.stringify(result)).not.toContain('upstream-secret')
   })
 
   it('rejects invalid task IDs before any Ark request', async () => {
@@ -786,11 +902,10 @@ describe('guarded real-generation routes', () => {
         confirmationToken: dryRun.json.data.confirmationToken,
       })
 
-      expect(result.response.status).toBe(502)
+      expect(result.response.status).toBe(429)
       expect(result.json).toEqual({
         code: 50201,
         data: {
-          taskIds: ['task-1'],
           error: {
             status: 429,
             code: 'RateLimitExceeded',
@@ -960,7 +1075,7 @@ describe('guarded real-generation routes', () => {
       })
 
       const exposed = JSON.stringify(result.json)
-      expect(result.response.status).toBe(502)
+      expect(result.response.status).toBe(401)
       expect(exposed).not.toContain('secret-test-key')
       expect(exposed).not.toContain('other-private-token')
       expect(exposed).toContain('[REDACTED]')
@@ -990,6 +1105,189 @@ describe('guarded real-generation routes', () => {
         msg: '任务状态查询成功',
       })
       expect(arkClient.getTask).toHaveBeenCalledWith('task:1')
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('lists tasks through the guarded route with repeated local task IDs', async () => {
+    const arkClient = {
+      createTask: vi.fn(),
+      getTask: vi.fn(),
+      listTasks: vi.fn().mockResolvedValue({
+        items: [{ id: 'task-1', status: 'failed' }],
+        total: 1,
+      }),
+      deleteTask: vi.fn(),
+    }
+    const context = await startApp({ arkClient })
+    try {
+      const query = new URLSearchParams({
+        pageNum: '2',
+        pageSize: '20',
+        status: 'failed',
+      })
+      query.append('taskId', 'task-1')
+      query.append('taskId', 'task-2')
+      query.set('model', 'ep-1')
+      query.set('serviceTier', 'flex')
+
+      const response = await fetch(
+        `${context.baseUrl}/api/videoGeneration/listTasks?${query}`,
+      )
+      const json = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(json).toEqual({
+        code: 0,
+        data: { items: [{ id: 'task-1', status: 'failed' }], total: 1 },
+        msg: '任务列表查询成功',
+      })
+      expect(arkClient.listTasks).toHaveBeenCalledWith({
+        pageNum: 2,
+        pageSize: 20,
+        status: 'failed',
+        taskIds: ['task-1', 'task-2'],
+        model: 'ep-1',
+        serviceTier: 'flex',
+      })
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('rejects repeated scalar list query fields before invoking the Ark client', async () => {
+    const context = await startApp()
+    try {
+      for (const field of ['pageNum', 'pageSize', 'status', 'model', 'serviceTier']) {
+        const response = await fetch(
+          `${context.baseUrl}/api/videoGeneration/listTasks?${field}=one&${field}=two`,
+        )
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+          code: 40010,
+          data: { reason: 'INVALID_LIST_QUERY', field },
+          msg: '任务列表查询参数无效',
+        })
+      }
+      expect(context.arkClient.listTasks).not.toHaveBeenCalled()
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('rejects a supplied blank list status before invoking the Ark client', async () => {
+    const context = await startApp()
+    try {
+      const response = await fetch(
+        `${context.baseUrl}/api/videoGeneration/listTasks?status=`,
+      )
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        code: 40010,
+        data: { reason: 'INVALID_LIST_QUERY', field: 'status' },
+        msg: '任务列表查询参数无效',
+      })
+      expect(context.arkClient.listTasks).not.toHaveBeenCalled()
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('rejects invalid list filters before any upstream Ark request', async () => {
+    const fetchImpl = vi.fn()
+    const arkClient = createArkClient({
+      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      apiKey: 'secret-test-key',
+      fetchImpl,
+    })
+    const context = await startApp({ arkClient })
+    const invalidQueries = [
+      'pageNum=0',
+      'pageNum=501',
+      'pageSize=0',
+      'pageSize=501',
+      'status=expired',
+      `taskId=${encodeURIComponent('../task')}`,
+      'model=',
+      'serviceTier=premium',
+    ]
+    try {
+      for (const query of invalidQueries) {
+        const response = await fetch(
+          `${context.baseUrl}/api/videoGeneration/listTasks?${query}`,
+        )
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({
+          code: 50204,
+          data: { error: { status: 400 } },
+          msg: 'Ark 任务列表查询失败',
+        })
+      }
+      expect(fetchImpl).not.toHaveBeenCalled()
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('preserves a redacted Ark 429 response from task listing', async () => {
+    const arkClient = {
+      createTask: vi.fn(),
+      getTask: vi.fn(),
+      listTasks: vi.fn().mockRejectedValue({
+        status: 429,
+        code: 'RateLimitExceeded',
+        message: 'secret-test-key Bearer upstream-private-token',
+        requestId: 'request-list',
+      }),
+      deleteTask: vi.fn(),
+    }
+    const context = await startApp({ arkClient })
+    try {
+      const response = await fetch(`${context.baseUrl}/api/videoGeneration/listTasks`)
+      const json = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(json).toEqual({
+        code: 50204,
+        data: {
+          error: {
+            status: 429,
+            code: 'RateLimitExceeded',
+            message: '[REDACTED] Bearer [REDACTED]',
+            requestId: 'request-list',
+          },
+        },
+        msg: 'Ark 任务列表查询失败',
+      })
+      expect(JSON.stringify(json)).not.toContain('secret-test-key')
+      expect(JSON.stringify(json)).not.toContain('upstream-private-token')
+    } finally {
+      await context.close()
+    }
+  })
+
+  it('uses 502 when an Ark list error carries an unsafe HTTP status', async () => {
+    const arkClient = {
+      createTask: vi.fn(),
+      getTask: vi.fn(),
+      listTasks: vi.fn().mockRejectedValue({
+        status: 200,
+        code: 'UnexpectedFailure',
+        message: 'unexpected failure',
+      }),
+      deleteTask: vi.fn(),
+    }
+    const context = await startApp({ arkClient })
+    try {
+      const response = await fetch(`${context.baseUrl}/api/videoGeneration/listTasks`)
+
+      expect(response.status).toBe(502)
+      expect(await response.json()).toMatchObject({
+        code: 50204,
+        data: { error: { status: 200 } },
+      })
     } finally {
       await context.close()
     }
@@ -1051,7 +1349,7 @@ describe('guarded real-generation routes', () => {
   it.each([
     [{ realGenerationEnabled: false }, 'REAL_GENERATION_DISABLED'],
     [{ arkApiKey: '   ' }, 'ARK_API_KEY_MISSING'],
-  ])('guards get and delete routes when runtime is not ready: %s', async (config, blockerCode) => {
+  ])('guards get, list, and delete routes when runtime is not ready: %s', async (config, blockerCode) => {
     const context = await startApp({ config })
     try {
       const getResponse = await fetch(
@@ -1060,6 +1358,9 @@ describe('guarded real-generation routes', () => {
       const deleteResult = await postJson(context.baseUrl, 'deleteTask', {
         taskId: 'task-1',
       })
+      const listResponse = await fetch(
+        `${context.baseUrl}/api/videoGeneration/listTasks?pageNum=1`,
+      )
 
       expect(getResponse.status).toBe(403)
       expect(await getResponse.json()).toMatchObject({
@@ -1073,7 +1374,14 @@ describe('guarded real-generation routes', () => {
         data: { blockers: [{ code: blockerCode }] },
         msg: '真实生成条件不满足',
       })
+      expect(listResponse.status).toBe(403)
+      expect(await listResponse.json()).toMatchObject({
+        code: 40301,
+        data: { blockers: [{ code: blockerCode }] },
+        msg: '真实生成条件不满足',
+      })
       expect(context.arkClient.getTask).not.toHaveBeenCalled()
+      expect(context.arkClient.listTasks).not.toHaveBeenCalled()
       expect(context.arkClient.deleteTask).not.toHaveBeenCalled()
     } finally {
       await context.close()
@@ -1098,7 +1406,7 @@ describe('guarded real-generation routes', () => {
       )
       const json = await response.json()
 
-      expect(response.status).toBe(502)
+      expect(response.status).toBe(404)
       expect(json).toEqual({
         code: 50202,
         data: {
@@ -1133,7 +1441,7 @@ describe('guarded real-generation routes', () => {
     try {
       const result = await postJson(context.baseUrl, 'deleteTask', { taskId: 'task-1' })
 
-      expect(result.response.status).toBe(502)
+      expect(result.response.status).toBe(409)
       expect(result.json).toEqual({
         code: 50203,
         data: {

@@ -47,6 +47,31 @@ export const getVideoGenerationTask = (params) => service({
   validateStatus: resolveServerEnvelope,
 })
 
+export function listVideoGenerationTasks({
+  pageNum = 1,
+  pageSize = 20,
+  status,
+  taskIds = [],
+  model,
+  serviceTier,
+} = {}) {
+  const params = new URLSearchParams({
+    pageNum: String(pageNum),
+    pageSize: String(pageSize),
+  })
+  if (status) params.set('status', status)
+  for (const taskId of taskIds) params.append('taskId', taskId)
+  if (model) params.set('model', model)
+  if (serviceTier) params.set('serviceTier', serviceTier)
+  return service({
+    url: '/videoGeneration/listTasks',
+    method: 'get',
+    params,
+    donNotShowLoading: true,
+    validateStatus: resolveServerEnvelope,
+  })
+}
+
 export const deleteVideoGenerationTask = (data) => service({
   url: '/videoGeneration/deleteTask',
   method: 'post',
