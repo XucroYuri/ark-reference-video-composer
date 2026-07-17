@@ -1,6 +1,6 @@
 # 设计与浏览器 QA 报告
 
-结论：`final result: passed`
+结论：`final result: blocked`
 
 本报告记录最终交付前的无成本浏览器验证、视觉对比和已修复问题。验证范围严格限定在被标注的视频生成 Composer，不包含方舟控制台外壳、导航、图库、历史记录、登录态和浮动工具按钮。
 
@@ -137,11 +137,47 @@ npm run build
 - `npm run lint`：通过，0 warning。
 - `npm run build`：通过；仅保留第三方依赖 PURE 注释和 chunk size 提示。
 
-## 11. 最终结论
+## 11. Task 10 收口浏览器复验（2026-07-17）
+
+运行约束：
+
+- 启动命令：`APP_REAL_GENERATION_ENABLED=false VITE_CLI_PORT=43127 VITE_SERVER_PORT=43128 npm run serve`
+- 前端：`http://127.0.0.1:43127/#/video-generation`
+- 健康检查：`GET http://127.0.0.1:43128/api/health` 返回 `{"code":0,"data":{"status":"ok"},"msg":"服务正常"}`。
+- 全程未启用真实生成，也未发出 Ark 请求。
+
+复验流程：
+
+1. 输入非法 URL `not-a-url`，浏览器原生校验显示 `请输入网址。`。
+2. 登记公开远程图片 `https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/1280px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg`，页面生成 `图片1`。
+3. 输入 `镜头沿木栈道缓慢向前移动，树叶随微风轻轻摇曳`，通过 `@` 菜单插入原子节点 `@图片1`。
+4. 确认参数为 `adaptive / 720p / 5s / count=1 / generate_audio=false`，打开 Dry-run 预览。
+5. 最终 API 请求的 `content` 顺序为一个 `text` 项，随后一个 `image_url` 项；图片项的 `role` 为 `reference_image`，URL 与已登记的 Wikimedia URL 一致。
+6. Dry-run 显示 `真实生成未启用` 和 `服务端未配置 ARK_API_KEY`。`real-generation-button` 数量为 `0`，即真实提交操作在 blockers 存在时不渲染；浏览器 Resource Timing 中 `/createTask` 请求计数为 `0`。
+7. 任务历史在首屏未自动请求；显式点击 `加载历史` 后才进入加载路径。由于运行期开关关闭，该请求安全失败并显示 `加载任务历史失败，请稍后重试。`。状态筛选器仍可从 `全部` 切换到 `queued` 并恢复。
+8. 最终浏览器 console：`0 error / 0 warning`。
+
+截图与响应式结果：
+
+| 视口 | 文件 | 结果 |
+| --- | --- | --- |
+| `1440 × 1000` | `docs/design-references/open-source-composer-desktop.png` | 页面 `scrollWidth = clientWidth = 1440`；520px Dry-run drawer 完整可见，主要操作可达。 |
+| `390 × 844` | `docs/design-references/open-source-composer-mobile.png` | **阻塞**：Dry-run drawer 仍为 520px，边界为 `x=-130 .. 390`，左侧标题和内容被裁掉。 |
+
+移动端进一步测量发现：
+
+- Composer 文档宽度没有常驻横向滚动（关闭参数面板时 `scrollWidth = clientWidth = 375`），清空、Dry-run 和历史按钮可通过垂直滚动到达。
+- 参数按钮右边界为 `399px`，超过 `375px` 内容宽度。
+- 展开生成参数后 tooltip 宽 `497px`，页面 `scrollWidth` 从 `375px` 增至 `497px`，不满足“高级控件适配且无横向溢出”。
+- Dry-run drawer 左侧内容在 `390px` 视口不可见，属于实质性可用性与可访问性问题。
+
+因此 Task 10 未达到移动端响应式验收条件。本轮只记录证据，不修改产品代码。
+
+## 12. 最终结论
 
 - 核心 `@图片N` 素材引用机制可复现。
 - Dry-run 请求结构可解释、可验证、可迁移。
 - 默认路径无成本，不会触发真实付费生成。
-- 视觉 QA 阻塞项已修复。
+- 既有视觉 QA 阻塞项已修复，但 Task 10 新发现的移动端 drawer 与参数面板阻塞项仍待处理。
 
-`final result: passed`
+`final result: blocked`
