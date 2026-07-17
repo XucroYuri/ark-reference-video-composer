@@ -763,6 +763,23 @@ describe('VideoGeneration composer', () => {
     expect(mobileStyles).toMatch(/\.request-preview pre\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s)
   })
 
+  it('prevents horizontal preview drawer overflow while preserving vertical scrolling', async () => {
+    const styles = await readFile(
+      `${process.cwd()}/src/view/videoGeneration/styles/index.scss`,
+      'utf8',
+    )
+
+    expect(styles).toMatch(
+      /\.request-preview-drawer \.el-drawer__body\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto/s,
+    )
+    expect(styles).toMatch(
+      /\.request-preview,\s*\.request-preview section\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    )
+    expect(styles).toMatch(
+      /\.request-preview pre\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*hidden[^}]*overflow-y:\s*auto[^}]*overflow-wrap:\s*anywhere/s,
+    )
+  })
+
   it('normalizes task history filters and emits previous and next page loads', async () => {
     const wrapper = mount(TaskHistoryFilters, {
       props: { total: 125 },

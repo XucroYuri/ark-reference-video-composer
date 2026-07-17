@@ -450,9 +450,25 @@
   border-radius: 6px;
 }
 
+.request-preview-drawer .el-drawer__body {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.request-preview,
+.request-preview section {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .request-preview {
   display: grid;
   gap: 16px;
+  overflow-wrap: anywhere;
 }
 
 .request-preview h2 {
@@ -465,15 +481,25 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
+  max-width: 100%;
   max-height: 220px;
   padding: 10px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   background: #f7f7f9;
   border: 1px solid #f0f2fa;
   border-radius: 8px;
   font-size: 12px;
   line-height: 18px;
   white-space: pre-wrap;
+}
+
+.request-preview code {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .request-blockers {
