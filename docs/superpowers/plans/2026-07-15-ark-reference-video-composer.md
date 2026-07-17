@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-在 `/Users/huachi/Code/03-video-toolkit/Video-Generation-API ` 中交付一个可以直接运行的 Vue 3 MVP，复刻火山方舟 Seedance 2.0 体验页被标注的视频生成输入组件：
+在项目根目录中交付一个可以直接运行的 Vue 3 MVP，复刻火山方舟 Seedance 2.0 体验页被标注的视频生成输入组件：
 
 - 先通过“参考内容”添加图片素材。
 - 在提示词中输入 `@`，只能引用已经添加的素材。

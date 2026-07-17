@@ -4,7 +4,7 @@
 
 **状态：** 已批准
 
-**目标目录：** `/Users/huachi/Code/03-video-toolkit/Video-Generation-API `
+**目标目录：** 项目根目录
 
 ## 1. 目标
 
@@ -289,7 +289,7 @@ APP_REAL_GENERATION_ENABLED=false
 
 ### 9.2 组件测试
 
-- 上传 `/Users/huachi/Downloads/参考图/小豆人设/小豆日常/小豆Q版.png` 后出现 `图片1`。
+- 上传符合要求的 PNG 测试夹具后出现 `图片1`。
 - 输入 `@` 只列出已就绪素材。
 - 键盘选择后插入原子节点。
 - Backspace 一次删除整个 mention。
