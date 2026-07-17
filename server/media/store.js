@@ -16,6 +16,8 @@ import { isIP } from 'node:net'
 
 import sharp from 'sharp'
 
+import { normalizeRemoteMediaUrl, RemoteMediaUrlError } from './remoteUrl.js'
+
 export const MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 
 const EXTENSION_BY_MIME = {
@@ -27,7 +29,10 @@ const EXTENSION_BY_MIME = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const INDEX_FILENAME = '.media-index.json'
 const ORPHAN_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.(png|jpg|webp)$/i
-const MAX_DIMENSION = 8192
+const MIN_DIMENSION = 300
+const MAX_DIMENSION = 6000
+const MIN_ASPECT_RATIO = 0.4
+const MAX_ASPECT_RATIO = 2.5
 const MAX_INPUT_PIXELS = 16_777_216
 const SHARP_FORMAT_BY_MIME = {
   'image/png': 'png',
@@ -99,25 +104,45 @@ function assertMediaId(id) {
 function toPublicRecord(record, configuredPublicBaseUrl) {
   const publicRecord = { ...record }
   delete publicRecord.filename
-  const remoteUrl = buildPublicMediaUrl(configuredPublicBaseUrl, record.filename)
-  if (remoteUrl) publicRecord.remoteUrl = remoteUrl
+  if (record.source === 'upload') {
+    const remoteUrl = buildPublicMediaUrl(configuredPublicBaseUrl, record.filename)
+    if (remoteUrl) publicRecord.remoteUrl = remoteUrl
+  }
   return publicRecord
 }
 
-function isStoredRecord(record, uploadDir) {
+function normalizeStoredRecord(record, uploadDir) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return false
   if (!UUID_PATTERN.test(record.id || '')) return false
+  if (record.kind !== 'image' || record.status !== 'ready') return false
+  if (typeof record.name !== 'string' || !record.name) return false
+
+  if (record.source === 'remote_url') {
+    if (record.filename !== undefined) return false
+    if (typeof record.remoteUrl !== 'string' || record.previewUrl !== record.remoteUrl) return false
+    try {
+      if (normalizeRemoteMediaUrl(record.remoteUrl) !== record.remoteUrl) return false
+    } catch {
+      return false
+    }
+    return { record, migrated: false }
+  }
+
+  const isLegacyUpload = record.source === undefined
+  if (!isLegacyUpload && record.source !== 'upload') return false
   const extension = EXTENSION_BY_MIME[record.mimeType]
   if (!extension || record.filename !== `${record.id}${extension}`) return false
   if (record.previewUrl !== `/uploads/${record.filename}`) return false
-  if (record.kind !== 'image' || record.status !== 'ready') return false
   if (!Number.isInteger(record.size) || record.size <= 0) return false
-  if (typeof record.name !== 'string' || !record.name) return false
 
   try {
-    return statSync(join(uploadDir, record.filename)).isFile()
+    if (!statSync(join(uploadDir, record.filename)).isFile()) return false
   } catch {
     return false
+  }
+  return {
+    record: isLegacyUpload ? { ...record, source: 'upload' } : record,
+    migrated: isLegacyUpload,
   }
 }
 
@@ -145,15 +170,21 @@ function hydrateIndex(uploadDir, indexPath) {
       throw new MediaStoreError('MEDIA_INDEX_CORRUPT', '本地素材索引格式无效')
     }
     for (const record of parsed.media) {
-      if (!isStoredRecord(record, uploadDir) || mediaById.has(record.id)) {
+      const normalized = normalizeStoredRecord(record, uploadDir)
+      if (!normalized || mediaById.has(record.id)) {
         needsRewrite = true
         continue
       }
-      mediaById.set(record.id, record)
+      mediaById.set(record.id, normalized.record)
+      if (normalized.migrated) needsRewrite = true
     }
   }
 
-  const knownFilenames = new Set([...mediaById.values()].map((record) => record.filename))
+  const knownFilenames = new Set(
+    [...mediaById.values()]
+      .filter((record) => record.source === 'upload')
+      .map((record) => record.filename),
+  )
   for (const filename of readdirSync(uploadDir)) {
     const isTemporaryIndex = filename.startsWith(`${INDEX_FILENAME}.`) && filename.endsWith('.tmp')
     const isOrphan = ORPHAN_PATTERN.test(filename) && !knownFilenames.has(filename)
@@ -222,11 +253,13 @@ async function validateDecodableImage(buffer, mimeType) {
     if (
       !Number.isInteger(metadata.width)
       || !Number.isInteger(metadata.height)
-      || metadata.width <= 0
-      || metadata.height <= 0
+      || metadata.width < MIN_DIMENSION
+      || metadata.height < MIN_DIMENSION
       || metadata.width > MAX_DIMENSION
       || metadata.height > MAX_DIMENSION
       || metadata.width * metadata.height > MAX_INPUT_PIXELS
+      || metadata.width / metadata.height < MIN_ASPECT_RATIO
+      || metadata.width / metadata.height > MAX_ASPECT_RATIO
     ) {
       throw new MediaStoreError('IMAGE_DIMENSIONS_EXCEEDED', '图片尺寸或像素数量超过安全上限')
     }
@@ -235,6 +268,7 @@ async function validateDecodableImage(buffer, mimeType) {
     }
 
     await image.clone().raw().toBuffer()
+    return { width: metadata.width, height: metadata.height }
   } catch (error) {
     if (error instanceof MediaStoreError) throw error
     const message = String(error?.message || '')
@@ -281,7 +315,7 @@ export function createMediaStore({
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
       throw new MediaStoreError('EMPTY_MEDIA_FILE', '上传文件不能为空')
     }
-    if (buffer.length > maxBytes) {
+    if (buffer.length >= maxBytes) {
       throw new MediaStoreError('MEDIA_TOO_LARGE', '上传文件不能超过 30MB')
     }
     if (detectMediaMime(buffer) !== mimeType) {
@@ -290,7 +324,7 @@ export function createMediaStore({
     if (!hasCompleteImageStructure(buffer, mimeType)) {
       throw new MediaStoreError('TRUNCATED_MEDIA_FILE', '图片文件不完整或已截断')
     }
-    await validateDecodableImage(buffer, mimeType)
+    const { width, height } = await validateDecodableImage(buffer, mimeType)
 
     return enqueueMutation(async () => {
       const id = idFactory()
@@ -299,10 +333,13 @@ export function createMediaStore({
       const previewUrl = `/uploads/${filename}`
       const record = {
         id,
+        source: 'upload',
         kind: 'image',
         name: safeOriginalName(file.originalname, filename),
         mimeType,
         size: buffer.length,
+        width,
+        height,
         status: 'ready',
         previewUrl,
         filename,
@@ -318,6 +355,40 @@ export function createMediaStore({
         throw error
       }
       return toPublicRecord(record, configuredPublicBaseUrl)
+    })
+  }
+
+  async function registerRemote({ url, name }) {
+    let remoteUrl
+    try {
+      remoteUrl = normalizeRemoteMediaUrl(url)
+    } catch (error) {
+      if (error instanceof RemoteMediaUrlError) {
+        throw new MediaStoreError(error.code, error.message)
+      }
+      throw error
+    }
+
+    return enqueueMutation(async () => {
+      const id = idFactory()
+      assertMediaId(id)
+      const record = {
+        id,
+        source: 'remote_url',
+        kind: 'image',
+        name: safeOriginalName(name || new URL(remoteUrl).pathname, `remote-${id}`),
+        previewUrl: remoteUrl,
+        remoteUrl,
+        status: 'ready',
+      }
+      mediaById.set(id, record)
+      try {
+        await persistIndex()
+      } catch (error) {
+        mediaById.delete(id)
+        throw error
+      }
+      return { ...record }
     })
   }
 
@@ -345,9 +416,11 @@ export function createMediaStore({
         mediaById.set(id, record)
         throw error
       }
-      await unlink(join(uploadDir, record.filename)).catch((error) => {
-        if (error?.code !== 'ENOENT') throw error
-      })
+      if (record.source === 'upload') {
+        await unlink(join(uploadDir, record.filename)).catch((error) => {
+          if (error?.code !== 'ENOENT') throw error
+        })
+      }
       return true
     })
   }
@@ -355,7 +428,7 @@ export function createMediaStore({
   async function read(filename) {
     const match = ORPHAN_PATTERN.exec(filename || '')
     const record = match ? mediaById.get(match[1]) : null
-    if (!record || record.filename !== filename) {
+    if (!record || record.source !== 'upload' || record.filename !== filename) {
       throw new MediaStoreError('MEDIA_NOT_FOUND', '素材不存在')
     }
 
@@ -400,5 +473,5 @@ export function createMediaStore({
     }
   }
 
-  return { save, get, list, remove, read }
+  return { save, registerRemote, get, list, remove, read }
 }

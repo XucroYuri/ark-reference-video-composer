@@ -9,14 +9,42 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 
 import { createApp } from '../app.js'
-import { buildPublicMediaUrl, createMediaStore } from '../media/store.js'
+import {
+  buildPublicMediaUrl,
+  createMediaStore,
+  MAX_UPLOAD_BYTES,
+  MediaStoreError,
+} from '../media/store.js'
 
-const PNG_1X1 = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
-  'base64',
-)
+const { unlinkSpy, writeFileSpy } = vi.hoisted(() => ({
+  unlinkSpy: vi.fn(),
+  writeFileSpy: vi.fn(),
+}))
 
-async function upload(baseUrl, buffer = PNG_1X1, { name = 'reference.png', type = 'image/png' } = {}) {
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal()
+  unlinkSpy.mockImplementation(actual.unlink)
+  writeFileSpy.mockImplementation(actual.writeFile)
+  return { ...actual, unlink: unlinkSpy, writeFile: writeFileSpy }
+})
+
+async function createPng(width, height) {
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: '#ffffff',
+    },
+  }).png().toBuffer()
+}
+
+const PNG_300X300 = await createPng(300, 300)
+
+async function upload(baseUrl, buffer = PNG_300X300, {
+  name = 'reference.png',
+  type = 'image/png',
+} = {}) {
   const body = new FormData()
   body.append('file', new Blob([buffer], { type }), name)
   const response = await fetch(`${baseUrl}/api/videoGeneration/uploadReference`, {
@@ -41,7 +69,7 @@ describe('videoGeneration local media', () => {
         arkApiKey: '',
         realGenerationEnabled: false,
         uploadDir,
-        maxUploadBytes: 100,
+        maxUploadBytes: 1024,
       },
       arkClient: { createTask: vi.fn(), getTask: vi.fn() },
       mediaStore,
@@ -71,20 +99,20 @@ describe('videoGeneration local media', () => {
       msg: '参考素材上传成功',
     })
     expect(json.data.previewUrl).toMatch(/^\/uploads\//)
-    expect(await readFile(join(uploadDir, basename(json.data.previewUrl)))).toEqual(PNG_1X1)
+    expect(await readFile(join(uploadDir, basename(json.data.previewUrl)))).toEqual(PNG_300X300)
 
     const readResponse = await fetch(`${baseUrl}${json.data.previewUrl}`)
     expect(readResponse.status).toBe(200)
     expect(readResponse.headers.get('content-type')).toMatch(/^image\/png\b/)
     expect(readResponse.headers.get('x-content-type-options')).toBe('nosniff')
-    expect(Buffer.from(await readResponse.arrayBuffer())).toEqual(PNG_1X1)
+    expect(Buffer.from(await readResponse.arrayBuffer())).toEqual(PNG_300X300)
   })
 
   it('preserves UTF-8 filenames that arrive through multipart latin1 decoding', async () => {
     const mojibakeName = Buffer.from('小豆Q版.png', 'utf8').toString('latin1')
 
     const saved = await mediaStore.save({
-      buffer: PNG_1X1,
+      buffer: PNG_300X300,
       mimetype: 'image/png',
       originalname: mojibakeName,
     })
@@ -93,7 +121,7 @@ describe('videoGeneration local media', () => {
   })
 
   it('rejects a spoofed MIME type before writing to disk', async () => {
-    const { response, json } = await upload(baseUrl, PNG_1X1, {
+    const { response, json } = await upload(baseUrl, PNG_300X300, {
       name: 'spoof.jpg',
       type: 'image/jpeg',
     })
@@ -124,7 +152,7 @@ describe('videoGeneration local media', () => {
     await expect(savePng(Buffer.alloc(65))).rejects.toMatchObject({
       code: 'MEDIA_TOO_LARGE',
     })
-    await expect(savePng(PNG_1X1.subarray(0, 8))).rejects.toMatchObject({
+    await expect(savePng(PNG_300X300.subarray(0, 8))).rejects.toMatchObject({
       code: 'TRUNCATED_MEDIA_FILE',
     })
     expect(constrainedStore.list()).toEqual([])
@@ -141,7 +169,7 @@ describe('videoGeneration local media', () => {
     })
     const localStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
     const file = {
-      buffer: PNG_1X1,
+      buffer: PNG_300X300,
       mimetype: 'image/png',
       originalname: 'reference.png',
     }
@@ -161,7 +189,7 @@ describe('videoGeneration local media', () => {
 
   it('uses UUID identities and supports safe get, list, and idempotent removal', async () => {
     const media = await mediaStore.save({
-      buffer: PNG_1X1,
+      buffer: PNG_300X300,
       mimetype: 'image/png',
       originalname: '..\\..\\escape.png',
     })
@@ -216,9 +244,9 @@ describe('videoGeneration local media', () => {
 
   it('keeps Multer upload-limit errors in the response envelope before disk write', async () => {
     const oversizedPng = Buffer.concat([
-      PNG_1X1.subarray(0, -12),
-      Buffer.alloc(40),
-      PNG_1X1.subarray(-12),
+      PNG_300X300.subarray(0, -12),
+      Buffer.alloc(200),
+      PNG_300X300.subarray(-12),
     ])
 
     const { response, json } = await upload(baseUrl, oversizedPng)
@@ -234,7 +262,7 @@ describe('videoGeneration local media', () => {
 
   it('rehydrates persisted metadata after restart and can remove the restored media', async () => {
     const saved = await mediaStore.save({
-      buffer: PNG_1X1,
+      buffer: PNG_300X300,
       mimetype: 'image/png',
       originalname: 'persisted.png',
     })
@@ -250,7 +278,7 @@ describe('videoGeneration local media', () => {
 
   it('serializes concurrent removal so only one caller reports a deletion', async () => {
     const saved = await mediaStore.save({
-      buffer: PNG_1X1,
+      buffer: PNG_300X300,
       mimetype: 'image/png',
       originalname: 'concurrent.png',
     })
@@ -267,7 +295,7 @@ describe('videoGeneration local media', () => {
   it('deterministically removes a UUID-named image orphan on restart', async () => {
     const orphanName = 'f25555d3-70f3-4dd0-8929-65de0ec86ee8.png'
     const orphanPath = join(uploadDir, orphanName)
-    await writeFile(orphanPath, PNG_1X1)
+    await writeFile(orphanPath, PNG_300X300)
 
     const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
 
@@ -276,7 +304,7 @@ describe('videoGeneration local media', () => {
   })
 
   it('rejects a fabricated image container whose pixels cannot be decoded', async () => {
-    const fabricated = Buffer.from(PNG_1X1)
+    const fabricated = Buffer.from(PNG_300X300)
     const idatOffset = fabricated.indexOf(Buffer.from('IDAT'))
     fabricated[idatOffset + 6] ^= 0xff
 
@@ -289,10 +317,10 @@ describe('videoGeneration local media', () => {
   })
 
   it('fully decodes genuine PNG, JPEG, and WebP images before accepting them', async () => {
-    const jpeg = await sharp(PNG_1X1).jpeg().toBuffer()
-    const webp = await sharp(PNG_1X1).webp().toBuffer()
+    const jpeg = await sharp(PNG_300X300).jpeg().toBuffer()
+    const webp = await sharp(PNG_300X300).webp().toBuffer()
     const fixtures = [
-      { buffer: PNG_1X1, mimetype: 'image/png', originalname: 'valid.png' },
+      { buffer: PNG_300X300, mimetype: 'image/png', originalname: 'valid.png' },
       { buffer: jpeg, mimetype: 'image/jpeg', originalname: 'valid.jpg' },
       { buffer: webp, mimetype: 'image/webp', originalname: 'valid.webp' },
     ]
@@ -321,6 +349,150 @@ describe('videoGeneration local media', () => {
       mimetype: 'image/png',
       originalname: 'too-wide.png',
     })).rejects.toMatchObject({ code: 'IMAGE_DIMENSIONS_EXCEEDED' })
+  })
+
+  it('accepts images exactly on the official dimension and aspect-ratio boundaries', async () => {
+    const fixtures = [
+      { buffer: PNG_300X300, width: 300, height: 300 },
+      { buffer: await createPng(6000, 2400), width: 6000, height: 2400 },
+    ]
+
+    const saved = []
+    for (const fixture of fixtures) {
+      saved.push(await mediaStore.save({
+        buffer: fixture.buffer,
+        mimetype: 'image/png',
+        originalname: `${fixture.width}x${fixture.height}.png`,
+      }))
+    }
+
+    expect(saved).toEqual(fixtures.map(({ buffer, width, height }) => expect.objectContaining({
+      source: 'upload',
+      width,
+      height,
+      size: buffer.length,
+    })))
+  })
+
+  it('rejects image dimensions immediately outside the official range', async () => {
+    const fixtures = [
+      { buffer: await createPng(299, 300), name: '299x300.png' },
+      { buffer: await createPng(6001, 2400), name: '6001x2400.png' },
+    ]
+
+    for (const fixture of fixtures) {
+      await expect(mediaStore.save({
+        buffer: fixture.buffer,
+        mimetype: 'image/png',
+        originalname: fixture.name,
+      })).rejects.toMatchObject({ code: 'IMAGE_DIMENSIONS_EXCEEDED' })
+    }
+  })
+
+  it('rejects image aspect ratios immediately outside the official range', async () => {
+    const fixtures = [
+      { buffer: await createPng(390, 1000), name: 'ratio-0.39.png' },
+      { buffer: await createPng(2510, 1000), name: 'ratio-2.51.png' },
+    ]
+
+    for (const fixture of fixtures) {
+      await expect(mediaStore.save({
+        buffer: fixture.buffer,
+        mimetype: 'image/png',
+        originalname: fixture.name,
+      })).rejects.toMatchObject({ code: 'IMAGE_DIMENSIONS_EXCEEDED' })
+    }
+  })
+
+  it('rejects an image buffer exactly at the 30 MB ceiling', async () => {
+    const exactlyThirtyMb = Buffer.alloc(MAX_UPLOAD_BYTES)
+    PNG_300X300.copy(exactlyThirtyMb, 0, 0, 8)
+    PNG_300X300.copy(exactlyThirtyMb, exactlyThirtyMb.length - 12, PNG_300X300.length - 12)
+
+    expect(exactlyThirtyMb).toHaveLength(30 * 1024 * 1024)
+    await expect(mediaStore.save({
+      buffer: exactlyThirtyMb,
+      mimetype: 'image/png',
+      originalname: 'exactly-30mb.png',
+    })).rejects.toMatchObject({ code: 'MEDIA_TOO_LARGE' })
+  })
+
+  it('persists remote records across restart and removes them without unlinking a file', async () => {
+    const registered = await mediaStore.registerRemote({
+      url: 'https://images.example.test/reference%20one.png#preview',
+      name: 'reference one.png',
+    })
+    const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
+
+    expect(registered).toMatchObject({
+      source: 'remote_url',
+      kind: 'image',
+      name: 'reference one.png',
+      previewUrl: 'https://images.example.test/reference%20one.png',
+      remoteUrl: 'https://images.example.test/reference%20one.png',
+      status: 'ready',
+    })
+    expect(restartedStore.get(registered.id)).toEqual(registered)
+    unlinkSpy.mockClear()
+    expect(await restartedStore.remove(registered.id)).toBe(true)
+    expect(unlinkSpy).not.toHaveBeenCalled()
+  })
+
+  it('translates remote URL policy failures into media-store errors', async () => {
+    const failure = mediaStore.registerRemote({
+      url: 'http://images.example.test/reference.png',
+      name: 'reference.png',
+    })
+
+    await expect(failure).rejects.toBeInstanceOf(MediaStoreError)
+    await expect(failure).rejects.toMatchObject({ code: 'REMOTE_MEDIA_URL_NOT_PUBLIC' })
+  })
+
+  it('rolls back a remote record when index persistence fails', async () => {
+    const failedId = 'e3ed68e4-b39a-4a1e-90b0-7378ab43a59d'
+    const successfulId = 'c946495c-0186-4fbb-896b-c262a1b567ba'
+    const ids = [failedId, successfulId]
+    const atomicStore = createMediaStore({
+      uploadDir,
+      publicBaseUrl: '',
+      idFactory: () => ids.shift(),
+    })
+    writeFileSpy.mockRejectedValueOnce(new Error('injected index write failure'))
+
+    await expect(atomicStore.registerRemote({
+      url: 'https://images.example.test/failed.png',
+      name: 'failed.png',
+    })).rejects.toThrow('injected index write failure')
+    expect(atomicStore.list()).toEqual([])
+    expect(atomicStore.get(failedId)).toBeNull()
+
+    const saved = await atomicStore.registerRemote({
+      url: 'https://images.example.test/saved.png',
+      name: 'saved.png',
+    })
+    const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
+
+    expect(saved.id).toBe(successfulId)
+    expect(restartedStore.get(failedId)).toBeNull()
+    expect(restartedStore.list()).toEqual([saved])
+  })
+
+  it('migrates upload index records that predate the source discriminator', async () => {
+    const saved = await mediaStore.save({
+      buffer: PNG_300X300,
+      mimetype: 'image/png',
+      originalname: 'legacy.png',
+    })
+    const indexPath = join(uploadDir, '.media-index.json')
+    const index = JSON.parse(await readFile(indexPath, 'utf8'))
+    delete index.media[0].source
+    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`)
+
+    const restartedStore = createMediaStore({ uploadDir, publicBaseUrl: '' })
+
+    expect(restartedStore.get(saved.id)).toMatchObject({ source: 'upload' })
+    const migratedIndex = JSON.parse(await readFile(indexPath, 'utf8'))
+    expect(migratedIndex.media[0]).toMatchObject({ source: 'upload' })
   })
 
   it('builds remote media URLs only from a safe public HTTPS base', () => {
@@ -369,9 +541,9 @@ describe('videoGeneration local media', () => {
   it('serves only indexed ID/extension pairs and hides loose files and the index', async () => {
     const uploaded = await upload(baseUrl)
     const media = uploaded.json.data
-    await writeFile(join(uploadDir, 'loose.png'), PNG_1X1)
+    await writeFile(join(uploadDir, 'loose.png'), PNG_300X300)
     const unindexedUuid = '8216e288-cd04-412e-9b4c-f0067d11ec5e.png'
-    await writeFile(join(uploadDir, unindexedUuid), PNG_1X1)
+    await writeFile(join(uploadDir, unindexedUuid), PNG_300X300)
     const paths = [
       '/uploads/loose.png',
       `/uploads/${unindexedUuid}`,
@@ -390,13 +562,13 @@ describe('videoGeneration local media', () => {
     const outsideDir = await mkdtemp(join(tmpdir(), 'ark-outside-'))
     try {
       const media = await mediaStore.save({
-        buffer: PNG_1X1,
+        buffer: PNG_300X300,
         mimetype: 'image/png',
         originalname: 'symlink.png',
       })
       const storedPath = join(uploadDir, basename(media.previewUrl))
       const outsidePath = join(outsideDir, 'outside.png')
-      await writeFile(outsidePath, PNG_1X1)
+      await writeFile(outsidePath, PNG_300X300)
       await rm(storedPath)
       await symlink(outsidePath, storedPath)
 
