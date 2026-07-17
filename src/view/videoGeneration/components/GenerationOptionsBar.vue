@@ -8,7 +8,7 @@
     <el-popover
       trigger="click"
       placement="bottom-start"
-      width="497"
+      width="min(497px, calc(100vw - 24px))"
       :teleported="false"
       popper-class="generation-options-popover"
     >

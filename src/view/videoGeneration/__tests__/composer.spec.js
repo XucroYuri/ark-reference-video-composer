@@ -364,6 +364,29 @@ describe('VideoGeneration composer', () => {
     wrapper.unmount()
   })
 
+  it('keeps blocked real generation visible and disabled without emitting a create', async () => {
+    const wrapper = mountComposer()
+
+    await uploadReference(wrapper)
+    await wrapper.find('[aria-label="提交 Dry-run"]').trigger('click')
+    await flush()
+    await flush()
+
+    const realGeneration = wrapper.find('[data-testid="real-generation-button"]')
+    expect(realGeneration.exists()).toBe(true)
+    expect(realGeneration.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="real-confirm-checkbox"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('真实生成未启用')
+
+    await realGeneration.trigger('click')
+    await flush()
+    expect(
+      wrapper.findComponent({ name: 'RequestPreviewDrawer' }).emitted('confirm-real'),
+    ).toBeUndefined()
+    expect(videoGenerationApi.createVideoGenerationTask).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('clear all resets editor, media, parameters, preview, and tasks', async () => {
     const wrapper = mountComposer()
 
@@ -716,6 +739,28 @@ describe('VideoGeneration composer', () => {
     expect(mobileStyles).toMatch(/\.generation-task-metadata\s*\{[^}]*grid-template-columns:/s)
     expect(mobileStyles).toMatch(/\.generation-task video\s*\{[^}]*width:\s*100%/s)
     expect(mobileStyles).toMatch(/\.generation-task-identity button,[^{]*\{[^}]*min-height:\s*40px/s)
+  })
+
+  it('caps the Dry-run drawer and generation options popover to their mobile container', async () => {
+    const drawer = await readFile(
+      `${process.cwd()}/src/view/videoGeneration/components/RequestPreviewDrawer.vue`,
+      'utf8',
+    )
+    const options = await readFile(
+      `${process.cwd()}/src/view/videoGeneration/components/GenerationOptionsBar.vue`,
+      'utf8',
+    )
+    const styles = await readFile(
+      `${process.cwd()}/src/view/videoGeneration/styles/index.scss`,
+      'utf8',
+    )
+    const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 639px)'))
+
+    expect(drawer).toMatch(/size="min\(520px, 100%\)"/)
+    expect(options).toMatch(/width="min\(497px, calc\(100vw - 24px\)\)"/)
+    expect(mobileStyles).toMatch(/\.generation-options-bar\s*\{[^}]*min-width:\s*0/s)
+    expect(mobileStyles).toMatch(/\.parameter-trigger\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0/s)
+    expect(mobileStyles).toMatch(/\.request-preview pre\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s)
   })
 
   it('normalizes task history filters and emits previous and next page loads', async () => {

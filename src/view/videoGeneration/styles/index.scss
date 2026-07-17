@@ -426,6 +426,24 @@
 }
 
 .generation-options-form select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #e0e0eb;
+  border-radius: 6px;
+}
+
+.generation-advanced-options {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.generation-advanced-options input[type="number"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   height: 32px;
   padding: 0 8px;
   border: 1px solid #e0e0eb;
@@ -444,6 +462,9 @@
 }
 
 .request-preview pre {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-height: 220px;
   padding: 10px;
   overflow: auto;
@@ -716,6 +737,33 @@
   .ark-composer-primary-controls,
   .ark-composer-submit-controls {
     max-width: 100%;
+  }
+
+  .ark-composer-primary-controls {
+    width: 100%;
+    overflow: hidden;
+  }
+
+  .generation-options-bar {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .parameter-trigger {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .parameter-trigger span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .request-preview pre {
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   .task-history-filters {

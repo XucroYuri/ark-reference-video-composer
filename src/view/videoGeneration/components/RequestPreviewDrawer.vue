@@ -2,7 +2,7 @@
   <el-drawer
     v-model="visible"
     title="Dry-run 预览"
-    size="520px"
+    size="min(520px, 100%)"
     :append-to-body="false"
     class="request-preview-drawer"
   >
@@ -47,11 +47,10 @@
           确认创建 {{ config.count }} 个独立任务（{{ config.resolution.toUpperCase() }} / {{ config.duration }}秒 / {{ config.generateAudio ? '有声' : '无声' }}）
         </el-checkbox>
         <el-button
-          v-if="canConfirm"
           type="primary"
           data-testid="real-generation-button"
-          :disabled="!confirmed || pending"
-          @click="$emit('confirm-real', result.confirmationToken)"
+          :disabled="!canConfirm || !confirmed || pending"
+          @click="confirmReal"
         >
           确认真实生成
         </el-button>
@@ -91,6 +90,11 @@ function formatJson(value) {
 async function copyJson() {
   const value = formatJson(props.result?.request || {})
   if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value)
+}
+
+function confirmReal() {
+  if (!canConfirm.value || !confirmed.value || props.pending) return
+  emit('confirm-real', props.result.confirmationToken)
 }
 
 watch(() => props.result?.confirmationToken, () => {
